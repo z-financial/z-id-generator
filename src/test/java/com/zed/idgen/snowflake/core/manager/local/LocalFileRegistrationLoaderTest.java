@@ -3,7 +3,6 @@ package com.zed.idgen.snowflake.core.manager.local;
 import com.zed.idgen.snowflake.core.constant.PrefixType;
 import com.zed.idgen.snowflake.core.constant.TimeUnit;
 import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
-import com.zed.idgen.snowflake.core.manager.DomainParam;
 import com.zed.idgen.snowflake.core.manager.GeneratorParam;
 import com.zed.idgen.snowflake.core.model.GeneratorInstanceProperties;
 import com.zed.idgen.snowflake.core.model.GeneratorProperties;
@@ -38,6 +37,10 @@ class LocalFileRegistrationLoaderTest {
         assertEquals(11L, properties.generatorConfig().generatorId());
         assertEquals("order-id-east", properties.generatorConfig().generatorName());
         assertEquals(List.of(7L), properties.workerIds());
+
+        IdDomainInfo domainInfo = loader.loadDomain();
+        assertEquals(100L, domainInfo.domainId());
+        assertEquals("orders", domainInfo.domainName());
 
         GeneratorProperties byId = loader.loadGenerator(
                 new GeneratorParam(11L, null));
@@ -130,18 +133,6 @@ class LocalFileRegistrationLoaderTest {
         InvalidConfigException ex = assertThrows(InvalidConfigException.class,
                 () -> new LocalFileRegistrationLoader(root, "domain-mismatch")
                         .loadGenerator(new GeneratorParam(null, "alpha")));
-
-        assertTrue(ex.getMessage().contains("domain id mismatch"));
-    }
-
-    @Test
-    void rejectsDomainParamMismatchWhenCallerChoosesDomainVerification() throws IOException {
-        Path root = prepareBase("domain-param-mismatch");
-        writeGenerator(root, "domain-param-mismatch", "11-7-alpha.yml", generatorYaml(""));
-
-        InvalidConfigException ex = assertThrows(InvalidConfigException.class,
-                () -> new LocalFileRegistrationLoader(root, "domain-param-mismatch")
-                        .loadDomain(new DomainParam(101L, "orders")));
 
         assertTrue(ex.getMessage().contains("domain id mismatch"));
     }

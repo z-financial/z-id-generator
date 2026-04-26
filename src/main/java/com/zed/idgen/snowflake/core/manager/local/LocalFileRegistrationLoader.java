@@ -1,8 +1,6 @@
 package com.zed.idgen.snowflake.core.manager.local;
 
 import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
-import com.zed.idgen.snowflake.core.manager.DomainLoader;
-import com.zed.idgen.snowflake.core.manager.DomainParam;
 import com.zed.idgen.snowflake.core.manager.GeneratorParam;
 import com.zed.idgen.snowflake.core.manager.RegistrationLoader;
 import com.zed.idgen.snowflake.core.model.GeneratorConfig;
@@ -30,7 +28,7 @@ import java.util.stream.Stream;
  * omit ids, names, and workerId, but any value it does set must match the
  * filename and the loaded domain config.
  */
-public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLoader {
+public class LocalFileRegistrationLoader implements RegistrationLoader {
     private static final String LOCAL_CONFIG_ROOT = "uid-register";
     private static final String DOMAIN_CONFIG_FILE = "domain.yml";
     private static final String GENERATOR_CONFIG_DIR = "generator";
@@ -102,15 +100,11 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
     }
 
     /**
-     * Loads ./uid-register/[baseDir]/domain.yml and optionally verifies it
-     * against DomainParam. DomainParam is not used for lookup;
-     * it only verifies that the loaded domain.yml matches expectations.
+     * Loads the single domain.yml for this local registration baseDir.
      */
     @Override
-    public IdDomainInfo loadDomain(DomainParam domainParam) {
-        IdDomainInfo domainInfo = loadDomainInfo();
-        verifyDomainParam(domainParam, domainInfo);
-        return domainInfo;
+    public IdDomainInfo loadDomain() {
+        return loadDomainInfo();
     }
 
     /**
@@ -295,24 +289,6 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
                     + ", config: " + workerId);
         }
         return List.of(workerId);
-    }
-
-    /**
-     * DomainParam is not used to locate local files; it only verifies that the
-     * loaded domain config is the caller's expected domain.
-     */
-    private static void verifyDomainParam(DomainParam domainParam, IdDomainInfo domainInfo) {
-        if (domainParam == null) {
-            return;
-        }
-        if (domainParam.domainId() != null && !Objects.equals(domainParam.domainId(), domainInfo.domainId())) {
-            throw new InvalidConfigException("domain id mismatch, expected: " + domainParam.domainId()
-                    + ", config: " + domainInfo.domainId());
-        }
-        if (domainParam.domainName() != null && !domainParam.domainName().equals(domainInfo.domainName())) {
-            throw new InvalidConfigException("domain name mismatch, expected: " + domainParam.domainName()
-                    + ", config: " + domainInfo.domainName());
-        }
     }
 
     /**
