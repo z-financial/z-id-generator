@@ -3,11 +3,11 @@ package com.zed.idgen.snowflake.core.generator;
 import com.zed.idgen.snowflake.core.IdGenerator;
 import com.zed.idgen.snowflake.core.component.IdCodec;
 import com.zed.idgen.snowflake.core.component.provider.impl.DefaultIdProvider;
-import com.zed.idgen.snowflake.core.constant.GeneratorInfo;
-import com.zed.idgen.snowflake.core.constant.GeneratorInstanceProperties;
-import com.zed.idgen.snowflake.core.constant.GeneratorPolicy;
-import com.zed.idgen.snowflake.core.constant.IdDomainInfo;
+import com.zed.idgen.snowflake.core.model.GeneratorPolicy;
 import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
+import com.zed.idgen.snowflake.core.model.GeneratorInfo;
+import com.zed.idgen.snowflake.core.model.GeneratorInstanceProperties;
+import com.zed.idgen.snowflake.core.model.IdDomainInfo;
 
 import java.util.List;
 

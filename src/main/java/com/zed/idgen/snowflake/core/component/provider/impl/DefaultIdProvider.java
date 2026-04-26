@@ -1,12 +1,12 @@
 package com.zed.idgen.snowflake.core.component.provider.impl;
 
-import com.zed.idgen.snowflake.core.constant.GeneratorInfo;
-import com.zed.idgen.snowflake.core.constant.GeneratorPolicy;
+import com.zed.idgen.snowflake.core.model.GeneratorPolicy;
 import com.zed.idgen.snowflake.core.exception.ClockRollbackException;
 import com.zed.idgen.snowflake.core.exception.IdGenerationException;
 import com.zed.idgen.snowflake.core.exception.IdRunoutException;
 import com.zed.idgen.snowflake.core.component.provider.IdProvider;
 import com.zed.idgen.snowflake.core.component.IdCodec;
+import com.zed.idgen.snowflake.core.model.GeneratorInfo;
 import com.zed.idgen.snowflake.core.strategy.StrategyExecutor;
 
 public class DefaultIdProvider implements IdProvider {

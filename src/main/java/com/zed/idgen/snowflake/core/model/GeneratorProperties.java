@@ -1,4 +1,4 @@
-package com.zed.idgen.snowflake.core.constant;
+package com.zed.idgen.snowflake.core.model;
 
 public record GeneratorProperties(
         GeneratorInstanceProperties generatorInstanceProperties,

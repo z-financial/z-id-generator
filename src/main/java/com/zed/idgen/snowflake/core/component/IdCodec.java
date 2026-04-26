@@ -1,9 +1,9 @@
 package com.zed.idgen.snowflake.core.component;
 
-import com.zed.idgen.snowflake.core.constant.IdDomainInfo;
 import com.zed.idgen.snowflake.core.constant.PrefixType;
 import com.zed.idgen.snowflake.core.constant.TimeUnit;
 import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
+import com.zed.idgen.snowflake.core.model.IdDomainInfo;
 import lombok.Getter;
 
 public class IdCodec {

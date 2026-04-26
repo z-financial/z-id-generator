@@ -1,6 +1,6 @@
-package com.zed.idgen.snowflake.core.constant;
+package com.zed.idgen.snowflake.core.model;
 
-public record GeneratorInfo (
+public record GeneratorInfo(
         long generatorId,
         String generatorName,
         Long domainId,
