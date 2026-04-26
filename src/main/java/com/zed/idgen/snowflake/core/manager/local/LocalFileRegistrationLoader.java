@@ -26,8 +26,8 @@ import java.util.stream.Stream;
  * ./uid-register/[baseDir]/generator/[generator-id]-[worker-id]-[generator-name].yml
  * <p>
  * The filename is part of the local registration identity. Generator YAML may
- * omit ids and names, but any value it does set must match the filename and
- * the loaded domain config.
+ * omit ids, names, and workerId, but any value it does set must match the
+ * filename and the loaded domain config.
  */
 public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLoader {
     private static final String LOCAL_CONFIG_ROOT = "uid-register";
@@ -109,23 +109,23 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
      * fields from the filename and loaded domain config.
      */
     private GeneratorInstanceProperties loadGenerator(GeneratorConfigFile configFile, IdDomainInfo domainInfo) {
-        GeneratorConfig config = YamlConfigLoader.load(configFile.path(), GeneratorConfig.class);
-        if (config == null) {
+        LocalFileGeneratorConfig localConfig = YamlConfigLoader.load(configFile.path(), LocalFileGeneratorConfig.class);
+        if (localConfig == null) {
             throw new InvalidConfigException("generator config is empty: " + configFile.path());
         }
-        if (config.generationPolicy() == null) {
+        if (localConfig.generationPolicy() == null) {
             throw new InvalidConfigException("generation policy must not be null: " + configFile.fileName());
         }
 
-        long generatorId = resolveGeneratorId(configFile, config);
-        String generatorName = resolveGeneratorName(configFile, config);
-        Long domainId = resolveDomainId(configFile, config, domainInfo);
-        String domainName = resolveDomainName(configFile, config, domainInfo);
-        List<Long> workers = resolveWorkers(configFile, config);
+        long generatorId = resolveGeneratorId(configFile, localConfig);
+        String generatorName = resolveGeneratorName(configFile, localConfig);
+        Long domainId = resolveDomainId(configFile, localConfig, domainInfo);
+        String domainName = resolveDomainName(configFile, localConfig, domainInfo);
+        List<Long> workers = resolveWorkers(configFile, localConfig);
 
         return new GeneratorInstanceProperties(
                 domainInfo,
-                new GeneratorInfo(generatorId, generatorName, domainId, domainName, config.generationPolicy()),
+                new GeneratorInfo(generatorId, generatorName, domainId, domainName, localConfig.generationPolicy()),
                 workers
         );
     }
@@ -197,7 +197,7 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
      * Generator id may be omitted in YAML, but any explicit value must match
      * the id encoded in the filename.
      */
-    private static long resolveGeneratorId(GeneratorConfigFile configFile, GeneratorConfig config) {
+    private static long resolveGeneratorId(GeneratorConfigFile configFile, LocalFileGeneratorConfig config) {
         if (config.generatorId() == null) {
             return configFile.generatorId();
         }
@@ -215,7 +215,7 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
      * Generator name may be omitted in YAML, but any explicit value must match
      * the name encoded in the filename.
      */
-    private static String resolveGeneratorName(GeneratorConfigFile configFile, GeneratorConfig config) {
+    private static String resolveGeneratorName(GeneratorConfigFile configFile, LocalFileGeneratorConfig config) {
         if (config.generatorName() == null) {
             return configFile.generatorName();
         }
@@ -230,7 +230,7 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
      * Generator YAML may omit domain id; if present, it must match domain.yml
      * because local registration has exactly one domain config per baseDir.
      */
-    private static Long resolveDomainId(GeneratorConfigFile configFile, GeneratorConfig config, IdDomainInfo domainInfo) {
+    private static Long resolveDomainId(GeneratorConfigFile configFile, LocalFileGeneratorConfig config, IdDomainInfo domainInfo) {
         if (config.domainId() == null) {
             return domainInfo.domainId();
         }
@@ -245,7 +245,7 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
      * Generator YAML may omit domain name; if present, it must match domain.yml
      * because local registration has exactly one domain config per baseDir.
      */
-    private static String resolveDomainName(GeneratorConfigFile configFile, GeneratorConfig config, IdDomainInfo domainInfo) {
+    private static String resolveDomainName(GeneratorConfigFile configFile, LocalFileGeneratorConfig config, IdDomainInfo domainInfo) {
         if (StringUtil.isEmpty(config.domainName())) {
             return domainInfo.domainName();
         }
@@ -257,17 +257,14 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
     }
 
     /**
-     * Local file registration supports zero or one worker only; omitted worker
-     * config is filled from the worker id encoded in the filename.
+     * Local file registration supports zero or one worker only; omitted
+     * workerId is filled from the worker id encoded in the filename.
      */
-    private static List<Long> resolveWorkers(GeneratorConfigFile configFile, GeneratorConfig config) {
-        if (config.workers() == null) {
+    private static List<Long> resolveWorkers(GeneratorConfigFile configFile, LocalFileGeneratorConfig config) {
+        if (config.workerId() == null) {
             return List.of(configFile.workerId());
         }
-        if (config.workers().size() != 1 || config.workers().getFirst() == null) {
-            throw new InvalidConfigException("local generator config must contain zero or one worker: " + configFile.fileName());
-        }
-        long workerId = config.workers().getFirst();
+        long workerId = config.workerId();
         if (workerId < 0) {
             throw new InvalidConfigException("worker id must not be negative: " + configFile.fileName());
         }

@@ -129,18 +129,41 @@ class LocalFileRegistrationLoaderTest {
     }
 
     @Test
-    void rejectsMultipleWorkersInLocalGeneratorConfig() throws IOException {
-        Path root = prepareBase("multi-worker");
-        writeGenerator(root, "multi-worker", "11-7-alpha.yml", generatorYaml("""
-                workers:
-                  - 7
-                  - 8
+    void allowsSingleWorkerIdInLocalGeneratorConfig() throws IOException {
+        Path root = prepareBase("single-worker");
+        writeGenerator(root, "single-worker", "11-7-alpha.yml", generatorYaml("""
+                workerId: 7
+                """));
+
+        GeneratorInstanceProperties properties = new LocalFileRegistrationLoader(root, "single-worker")
+                .loadByName("alpha", null);
+
+        assertEquals(List.of(7L), properties.workers());
+    }
+
+    @Test
+    void rejectsWorkerIdMismatchWithFilename() throws IOException {
+        Path root = prepareBase("worker-mismatch");
+        writeGenerator(root, "worker-mismatch", "11-7-alpha.yml", generatorYaml("""
+                workerId: 8
                 """));
 
         InvalidConfigException ex = assertThrows(InvalidConfigException.class,
-                () -> new LocalFileRegistrationLoader(root, "multi-worker").loadByName("alpha", null));
+                () -> new LocalFileRegistrationLoader(root, "worker-mismatch").loadByName("alpha", null));
 
-        assertTrue(ex.getMessage().contains("zero or one worker"));
+        assertTrue(ex.getMessage().contains("worker id mismatch"));
+    }
+
+    @Test
+    void rejectsWorkersArrayInLocalGeneratorConfig() throws IOException {
+        Path root = prepareBase("workers-array");
+        writeGenerator(root, "workers-array", "11-7-alpha.yml", generatorYaml("""
+                workers:
+                  - 7
+                """));
+
+        assertThrows(InvalidConfigException.class,
+                () -> new LocalFileRegistrationLoader(root, "workers-array").loadByName("alpha", null));
     }
 
     @Test
