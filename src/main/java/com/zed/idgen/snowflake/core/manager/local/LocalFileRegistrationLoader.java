@@ -39,6 +39,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
     private final Path domainConfigPath;
     private final Path generatorConfigDir;
 
+    /**
+     * Creates a loader for ./uid-register/[baseDir].
+     * The baseDir value must be one safe path segment and must already exist.
+     */
     public LocalFileRegistrationLoader(String baseDir) {
         this(Path.of(LOCAL_CONFIG_ROOT), baseDir);
     }
@@ -50,6 +54,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         this.generatorConfigDir = requireReadableDirectory(basePath.resolve(GENERATOR_CONFIG_DIR), "generator config directory");
     }
 
+    /**
+     * Loads a generator by the passed generator id. DomainParam is not used for
+     * lookup; it only verifies that the loaded domain.yml matches expectations.
+     */
     @Override
     public GeneratorInstanceProperties loadById(long generatorId, DomainParam domainParam) {
         if (generatorId < 0) {
@@ -64,6 +72,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         return loadGenerator(configFile, domainInfo);
     }
 
+    /**
+     * Loads a generator by the passed generator name. DomainParam is not used for
+     * lookup; it only verifies that the loaded domain.yml matches expectations.
+     */
     @Override
     public GeneratorInstanceProperties loadByName(String generatorName, DomainParam domainParam) {
         validateGeneratorName(generatorName, "requested generator name");
@@ -76,6 +88,11 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         return loadGenerator(configFile, domainInfo);
     }
 
+    /**
+     * Loads ./uid-register/[baseDir]/domain.yml and optionally verifies it
+     * against DomainParam. DomainParam is not used for lookup;
+     * it only verifies that the loaded domain.yml matches expectations.
+     */
     @Override
     public IdDomainInfo loadDomain(DomainParam domainParam) {
         requireReadableFile(domainConfigPath, "domain config file");
@@ -87,6 +104,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         return domainInfo;
     }
 
+    /**
+     * Loads one generator YAML and fills omitted generator/domain identity
+     * fields from the filename and loaded domain config.
+     */
     private GeneratorInstanceProperties loadGenerator(GeneratorConfigFile configFile, IdDomainInfo domainInfo) {
         GeneratorConfig config = YamlConfigLoader.load(configFile.path(), GeneratorConfig.class);
         if (config == null) {
@@ -109,6 +130,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         );
     }
 
+    /**
+     * Scans all generator files first so duplicate generator ids, worker ids,
+     * and generator names are rejected before returning a matched config.
+     */
     private GeneratorConfigIndex loadGeneratorConfigIndex() {
         Map<Long, GeneratorConfigFile> byGeneratorId = new HashMap<>();
         Map<Long, GeneratorConfigFile> byWorkerId = new HashMap<>();
@@ -136,6 +161,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         return new GeneratorConfigIndex(byGeneratorId, byGeneratorName);
     }
 
+    /**
+     * Parses [generator-id]-[worker-id]-[generator-name].yml by locating the
+     * first two separators, allowing generator names to contain hyphens.
+     */
     private static GeneratorConfigFile parseGeneratorConfigFile(Path path) {
         String fileName = path.getFileName().toString();
         if (!fileName.endsWith(GENERATOR_CONFIG_SUFFIX)) {
@@ -164,6 +193,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         return new GeneratorConfigFile(generatorId, workerId, generatorName, path, fileName);
     }
 
+    /**
+     * Generator id may be omitted in YAML, but any explicit value must match
+     * the id encoded in the filename.
+     */
     private static long resolveGeneratorId(GeneratorConfigFile configFile, GeneratorConfig config) {
         if (config.generatorId() == null) {
             return configFile.generatorId();
@@ -178,6 +211,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         return config.generatorId();
     }
 
+    /**
+     * Generator name may be omitted in YAML, but any explicit value must match
+     * the name encoded in the filename.
+     */
     private static String resolveGeneratorName(GeneratorConfigFile configFile, GeneratorConfig config) {
         if (config.generatorName() == null) {
             return configFile.generatorName();
@@ -189,6 +226,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         return config.generatorName();
     }
 
+    /**
+     * Generator YAML may omit domain id; if present, it must match domain.yml
+     * because local registration has exactly one domain config per baseDir.
+     */
     private static Long resolveDomainId(GeneratorConfigFile configFile, GeneratorConfig config, IdDomainInfo domainInfo) {
         if (config.domainId() == null) {
             return domainInfo.domainId();
@@ -200,6 +241,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         return config.domainId();
     }
 
+    /**
+     * Generator YAML may omit domain name; if present, it must match domain.yml
+     * because local registration has exactly one domain config per baseDir.
+     */
     private static String resolveDomainName(GeneratorConfigFile configFile, GeneratorConfig config, IdDomainInfo domainInfo) {
         if (StringUtil.isEmpty(config.domainName())) {
             return domainInfo.domainName();
@@ -211,6 +256,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         return config.domainName();
     }
 
+    /**
+     * Local file registration supports zero or one worker only; omitted worker
+     * config is filled from the worker id encoded in the filename.
+     */
     private static List<Long> resolveWorkers(GeneratorConfigFile configFile, GeneratorConfig config) {
         if (config.workers() == null) {
             return List.of(configFile.workerId());
@@ -229,6 +278,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         return List.of(workerId);
     }
 
+    /**
+     * DomainParam is not used to locate local files; it only verifies that the
+     * loaded domain config is the caller's expected domain.
+     */
     private static void verifyDomainParam(DomainParam domainParam, IdDomainInfo domainInfo) {
         if (domainParam == null) {
             return;
@@ -243,6 +296,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         }
     }
 
+    /**
+     * Inserts one filename-derived identity into an index and reports both file
+     * names when a duplicate identity is found.
+     */
     private static <T> void putUnique(Map<T, GeneratorConfigFile> map,
                                       T key,
                                       GeneratorConfigFile configFile,
@@ -254,6 +311,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         }
     }
 
+    /**
+     * Resolves ./uid-register/[baseDir] and rejects any baseDir that is not a
+     * safe single segment under the local registration root.
+     */
     private static Path resolveBasePath(Path rootPath, String baseDir) {
         Path baseSegment;
         Path resolvedPath;
@@ -266,6 +327,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         return requireReadableDirectory(resolvedPath, "local registration base directory");
     }
 
+    /**
+     * Parses filename ids and rejects blanks or leading signs before numeric
+     * conversion, keeping file identity format strict.
+     */
     private static long parseUnsignedLong(String value, String fieldName, String fileName) {
         if (StringUtil.isEmpty(value)) {
             throw new InvalidConfigException(fieldName + " must not be blank in generator config filename: " + fileName);
@@ -280,6 +345,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         }
     }
 
+    /**
+     * Generator names are filename components in local registration, so they
+     * must be safe single path segments.
+     */
     private static void validateGeneratorName(String generatorName, String target) {
         try {
             PathUtil.requireSafeSinglePathSegment(generatorName);
@@ -288,6 +357,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         }
     }
 
+    /**
+     * Normalizes the configured local root before child paths are resolved
+     * against it.
+     */
     private static Path toAbsolutePath(Path path) {
         if (path == null) {
             throw new InvalidConfigException("local registration root must not be null");
@@ -295,6 +368,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         return path.toAbsolutePath().normalize();
     }
 
+    /**
+     * Fails fast when required local registration directories are missing,
+     * unreadable, or accidentally configured as files.
+     */
     private static Path requireReadableDirectory(Path path, String label) {
         if (!Files.exists(path)) {
             throw new InvalidConfigException(label + " does not exist: " + path);
@@ -308,6 +385,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         return path;
     }
 
+    /**
+     * Fails fast when required YAML files are missing, unreadable, or
+     * accidentally configured as directories.
+     */
     private static void requireReadableFile(Path path, String label) {
         if (!Files.exists(path)) {
             throw new InvalidConfigException(label + " does not exist: " + path);
@@ -320,9 +401,15 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
         }
     }
 
+    /**
+     * Filename-derived generator identity plus the resolved config path.
+     */
     private record GeneratorConfigFile(long generatorId, long workerId, String generatorName, Path path, String fileName) {
     }
 
+    /**
+     * In-memory lookup indexes built from every generator config filename.
+     */
     private record GeneratorConfigIndex(Map<Long, GeneratorConfigFile> byGeneratorId,
                                         Map<String, GeneratorConfigFile> byGeneratorName) {
     }
