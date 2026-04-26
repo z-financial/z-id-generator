@@ -5,7 +5,6 @@ import com.zed.idgen.snowflake.core.component.IdCodec;
 import com.zed.idgen.snowflake.core.component.provider.impl.DefaultIdProvider;
 import com.zed.idgen.snowflake.core.model.GeneratorPolicy;
 import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
-import com.zed.idgen.snowflake.core.model.GeneratorInfo;
 import com.zed.idgen.snowflake.core.model.GeneratorInstanceProperties;
 import com.zed.idgen.snowflake.core.model.IdDomainInfo;
 
@@ -20,13 +19,13 @@ public final class IdGeneratorFactory {
             throw new InvalidConfigException("generator instance properties must not be null");
         }
         IdDomainInfo domainInfo = requireDomainInfo(properties);
-        GeneratorInfo generatorInfo = requireGeneratorInfo(properties);
-        validatePolicy(generatorInfo.generationPolicy());
+        validateGeneratorIdentity(properties);
+        validatePolicy(properties.generationPolicy());
 
         IdCodec idCodec = new IdCodec(domainInfo);
         long worker = resolveSingleWorker(properties.workers(), idCodec);
 
-        return new DefaultIdGenerator(new DefaultIdProvider(worker, idCodec, generatorInfo));
+        return new DefaultIdGenerator(new DefaultIdProvider(worker, idCodec, properties.generationPolicy()));
     }
 
     private static IdDomainInfo requireDomainInfo(GeneratorInstanceProperties properties) {
@@ -36,14 +35,13 @@ public final class IdGeneratorFactory {
         return properties.idDomainInfo();
     }
 
-    private static GeneratorInfo requireGeneratorInfo(GeneratorInstanceProperties properties) {
-        if (properties.generatorInfo() == null) {
-            throw new InvalidConfigException("generator info must not be null");
+    private static void validateGeneratorIdentity(GeneratorInstanceProperties properties) {
+        if (properties.generatorId() < 0) {
+            throw new InvalidConfigException("generator id must not be negative");
         }
-        if (properties.generatorInfo().generatorName() == null || properties.generatorInfo().generatorName().isBlank()) {
+        if (properties.generatorName() == null || properties.generatorName().isBlank()) {
             throw new InvalidConfigException("generator name must not be blank");
         }
-        return properties.generatorInfo();
     }
 
     private static void validatePolicy(GeneratorPolicy policy) {
@@ -62,6 +60,7 @@ public final class IdGeneratorFactory {
     }
 
     private static long resolveSingleWorker(List<Long> workers, IdCodec idCodec) {
+        // receiving a list of works for forward compatibility. now only allow single worker
         if (workers == null || workers.size() != 1 || workers.getFirst() == null) {
             throw new InvalidConfigException("exactly one worker is required");
         }

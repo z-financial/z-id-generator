@@ -1,9 +1,10 @@
 package com.zed.idgen.snowflake.core.manager;
 
-import com.zed.idgen.snowflake.core.model.GeneratorInstanceProperties;
+import com.zed.idgen.snowflake.core.model.GeneratorProperties;
 
 public interface RegistrationLoader {
-    GeneratorInstanceProperties loadById(long generatorId, DomainParam domainParam);
-
-    GeneratorInstanceProperties loadByName(String generatorName, DomainParam domainParam);
+    /**
+     * Loads generator registration data. GeneratorParam locates the generator.
+     */
+    GeneratorProperties loadGenerator(GeneratorParam generatorParam);
 }

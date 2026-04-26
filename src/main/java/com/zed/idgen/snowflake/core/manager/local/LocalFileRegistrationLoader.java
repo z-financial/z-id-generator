@@ -3,9 +3,10 @@ package com.zed.idgen.snowflake.core.manager.local;
 import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
 import com.zed.idgen.snowflake.core.manager.DomainLoader;
 import com.zed.idgen.snowflake.core.manager.DomainParam;
+import com.zed.idgen.snowflake.core.manager.GeneratorParam;
 import com.zed.idgen.snowflake.core.manager.RegistrationLoader;
-import com.zed.idgen.snowflake.core.model.GeneratorInfo;
-import com.zed.idgen.snowflake.core.model.GeneratorInstanceProperties;
+import com.zed.idgen.snowflake.core.model.GeneratorConfig;
+import com.zed.idgen.snowflake.core.model.GeneratorProperties;
 import com.zed.idgen.snowflake.core.model.IdDomainInfo;
 import com.zed.idgen.snowflake.core.util.PathUtil;
 import com.zed.idgen.snowflake.core.util.StringUtil;
@@ -55,37 +56,49 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
     }
 
     /**
-     * Loads a generator by the passed generator id. DomainParam is not used for
-     * lookup; it only verifies that the loaded domain.yml matches expectations.
+     * Loads a generator by GeneratorParam. GeneratorParam locates the file by
+     * id, name, or both. Caller-specific domain checks happen outside this
+     * registration lookup using the returned IdDomainInfo.
      */
     @Override
-    public GeneratorInstanceProperties loadById(long generatorId, DomainParam domainParam) {
-        if (generatorId < 0) {
-            throw new InvalidConfigException("generator id must not be negative: " + generatorId);
+    public GeneratorProperties loadGenerator(GeneratorParam generatorParam) {
+        if (generatorParam == null) {
+            throw new InvalidConfigException("generator param must not be null");
         }
-        IdDomainInfo domainInfo = loadDomain(domainParam);
+        IdDomainInfo domainInfo = loadDomainInfo();
         GeneratorConfigIndex index = loadGeneratorConfigIndex();
-        GeneratorConfigFile configFile = index.byGeneratorId().get(generatorId);
-        if (configFile == null) {
-            throw new InvalidConfigException("generator config not found by id: " + generatorId);
-        }
-        return loadGenerator(configFile, domainInfo);
+        GeneratorConfigFile configFile = findGeneratorConfig(generatorParam, index);
+        return loadGeneratorProperties(configFile, domainInfo);
     }
 
     /**
-     * Loads a generator by the passed generator name. DomainParam is not used for
-     * lookup; it only verifies that the loaded domain.yml matches expectations.
+     * Selects one indexed generator config. If both id and name are provided,
+     * the id locates the file and the name must match the filename identity.
      */
-    @Override
-    public GeneratorInstanceProperties loadByName(String generatorName, DomainParam domainParam) {
-        validateGeneratorName(generatorName, "requested generator name");
-        IdDomainInfo domainInfo = loadDomain(domainParam);
-        GeneratorConfigIndex index = loadGeneratorConfigIndex();
+    private static GeneratorConfigFile findGeneratorConfig(GeneratorParam generatorParam, GeneratorConfigIndex index) {
+        Long generatorId = generatorParam.generatorId();
+        String generatorName = generatorParam.generatorName();
+        if (generatorName != null) {
+            validateGeneratorName(generatorName, "requested generator name");
+        }
+
+        if (generatorId != null) {
+            GeneratorConfigFile configFile = index.byGeneratorId().get(generatorId);
+            if (configFile == null) {
+                throw new InvalidConfigException("generator config not found by id: " + generatorId);
+            }
+            if (generatorName != null && !generatorName.equals(configFile.generatorName())) {
+                throw new InvalidConfigException("generator name mismatch, requested: " + generatorName
+                        + ", filename: " + configFile.generatorName());
+            }
+            return configFile;
+        }
+
         GeneratorConfigFile configFile = index.byGeneratorName().get(generatorName);
         if (configFile == null) {
             throw new InvalidConfigException("generator config not found by name: " + generatorName);
         }
-        return loadGenerator(configFile, domainInfo);
+        return configFile;
     }
 
     /**
@@ -95,20 +108,30 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
      */
     @Override
     public IdDomainInfo loadDomain(DomainParam domainParam) {
-        requireReadableFile(domainConfigPath, "domain config file");
-        IdDomainInfo domainInfo = YamlConfigLoader.load(domainConfigPath, IdDomainInfo.class);
-        if (domainInfo == null) {
-            throw new InvalidConfigException("domain config is empty: " + domainConfigPath);
-        }
+        IdDomainInfo domainInfo = loadDomainInfo();
         verifyDomainParam(domainParam, domainInfo);
         return domainInfo;
     }
 
     /**
-     * Loads one generator YAML and fills omitted generator/domain identity
-     * fields from the filename and loaded domain config.
+     * Loads the single domain.yml for this local registration baseDir without
+     * applying caller-specific domain expectations.
      */
-    private GeneratorInstanceProperties loadGenerator(GeneratorConfigFile configFile, IdDomainInfo domainInfo) {
+    private IdDomainInfo loadDomainInfo() {
+        requireReadableFile(domainConfigPath, "domain config file");
+        IdDomainInfo domainInfo = YamlConfigLoader.load(domainConfigPath, IdDomainInfo.class);
+        if (domainInfo == null) {
+            throw new InvalidConfigException("domain config is empty: " + domainConfigPath);
+        }
+        return domainInfo;
+    }
+
+    /**
+     * Loads one generator YAML as registration data. Filename values provide
+     * omitted generator identity, and any domain identity in YAML must match
+     * domain.yml.
+     */
+    private GeneratorProperties loadGeneratorProperties(GeneratorConfigFile configFile, IdDomainInfo domainInfo) {
         LocalFileGeneratorConfig localConfig = YamlConfigLoader.load(configFile.path(), LocalFileGeneratorConfig.class);
         if (localConfig == null) {
             throw new InvalidConfigException("generator config is empty: " + configFile.path());
@@ -119,14 +142,15 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
 
         long generatorId = resolveGeneratorId(configFile, localConfig);
         String generatorName = resolveGeneratorName(configFile, localConfig);
-        Long domainId = resolveDomainId(configFile, localConfig, domainInfo);
-        String domainName = resolveDomainName(configFile, localConfig, domainInfo);
+        validateDomainId(configFile, localConfig, domainInfo);
+        validateDomainName(configFile, localConfig, domainInfo);
         List<Long> workers = resolveWorkers(configFile, localConfig);
 
-        return new GeneratorInstanceProperties(
+        return new GeneratorProperties(
                 domainInfo,
-                new GeneratorInfo(generatorId, generatorName, domainId, domainName, localConfig.generationPolicy()),
-                workers
+                new GeneratorConfig(generatorId, generatorName, localConfig.generationPolicy()),
+                workers,
+                null
         );
     }
 
@@ -230,30 +254,28 @@ public class LocalFileRegistrationLoader implements RegistrationLoader, DomainLo
      * Generator YAML may omit domain id; if present, it must match domain.yml
      * because local registration has exactly one domain config per baseDir.
      */
-    private static Long resolveDomainId(GeneratorConfigFile configFile, LocalFileGeneratorConfig config, IdDomainInfo domainInfo) {
+    private static void validateDomainId(GeneratorConfigFile configFile, LocalFileGeneratorConfig config, IdDomainInfo domainInfo) {
         if (config.domainId() == null) {
-            return domainInfo.domainId();
+            return;
         }
         if (!Objects.equals(config.domainId(), domainInfo.domainId())) {
             throw new InvalidConfigException("domain id mismatch, domain config: " + domainInfo.domainId()
                     + ", generator config: " + config.domainId() + ", file: " + configFile.fileName());
         }
-        return config.domainId();
     }
 
     /**
      * Generator YAML may omit domain name; if present, it must match domain.yml
      * because local registration has exactly one domain config per baseDir.
      */
-    private static String resolveDomainName(GeneratorConfigFile configFile, LocalFileGeneratorConfig config, IdDomainInfo domainInfo) {
+    private static void validateDomainName(GeneratorConfigFile configFile, LocalFileGeneratorConfig config, IdDomainInfo domainInfo) {
         if (StringUtil.isEmpty(config.domainName())) {
-            return domainInfo.domainName();
+            return;
         }
         if (!config.domainName().equals(domainInfo.domainName())) {
             throw new InvalidConfigException("domain name mismatch, domain config: " + domainInfo.domainName()
                     + ", generator config: " + config.domainName() + ", file: " + configFile.fileName());
         }
-        return config.domainName();
     }
 
     /**

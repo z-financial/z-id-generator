@@ -1,9 +1,9 @@
 package com.zed.idgen.snowflake.core.manager;
 
-import com.zed.idgen.snowflake.core.model.GeneratorInfo;
+import com.zed.idgen.snowflake.core.model.GeneratorConfig;
 
 public interface GeneratorRegistrator {
-    void registerGenerator(GeneratorInfo info);
+    void registerGenerator(GeneratorConfig config);
 
     boolean unregisterGenerator(long generatorId);
 }

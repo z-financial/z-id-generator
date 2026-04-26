@@ -6,13 +6,11 @@ import com.zed.idgen.snowflake.core.exception.IdGenerationException;
 import com.zed.idgen.snowflake.core.exception.IdRunoutException;
 import com.zed.idgen.snowflake.core.component.provider.IdProvider;
 import com.zed.idgen.snowflake.core.component.IdCodec;
-import com.zed.idgen.snowflake.core.model.GeneratorInfo;
 import com.zed.idgen.snowflake.core.strategy.StrategyExecutor;
 
 public class DefaultIdProvider implements IdProvider {
     private final long worker;
     private final IdCodec idCodec;
-    private final GeneratorInfo generatorInfo;
     private final GeneratorPolicy policy;
     private long time;
     private long sequence;
@@ -20,11 +18,10 @@ public class DefaultIdProvider implements IdProvider {
     // reusable array to avoid allocating an array on hot path of single id creation
     private final long[] singleId = new long[1];
 
-    public DefaultIdProvider(long worker, IdCodec idCodec, GeneratorInfo generatorInfo) {
+    public DefaultIdProvider(long worker, IdCodec idCodec, GeneratorPolicy policy) {
         this.worker = worker;
         this.idCodec = idCodec;
-        this.generatorInfo = generatorInfo;
-        this.policy = generatorInfo.generationPolicy();
+        this.policy = policy;
     }
 
     private long[] doNextIds(int size, long[] arr) {
