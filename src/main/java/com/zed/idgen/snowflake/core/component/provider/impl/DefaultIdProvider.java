@@ -3,7 +3,6 @@ package com.zed.idgen.snowflake.core.component.provider.impl;
 import com.zed.idgen.snowflake.core.model.GeneratorPolicy;
 import com.zed.idgen.snowflake.core.exception.ClockRollbackException;
 import com.zed.idgen.snowflake.core.exception.IdGenerationException;
-import com.zed.idgen.snowflake.core.exception.IdRunoutException;
 import com.zed.idgen.snowflake.core.component.provider.IdProvider;
 import com.zed.idgen.snowflake.core.component.IdCodec;
 import com.zed.idgen.snowflake.core.strategy.StrategyExecutor;
@@ -32,7 +31,7 @@ public class DefaultIdProvider implements IdProvider {
         for (int i = 0; i <= policy.maximumRetry(); i++) {
             long now = getCurrentTime();
             if (now > idCodec.getMaxTime()) {
-                throw new IdGenerationException("time exceeds max time: " + now);
+                throw IdGenerationException.maxRetryExceeded();
             }
 
             if (now < time) {
@@ -50,7 +49,7 @@ public class DefaultIdProvider implements IdProvider {
                     if (i != policy.maximumRetry() && StrategyExecutor.idRunOutStrategy(policy.idRunOutPolicy())) {
                         continue;
                     } else {
-                        throw new IdRunoutException("id run out, time: " + time);
+                        throw IdGenerationException.idRunout();
                     }
                 }
             } else {
@@ -87,6 +86,5 @@ public class DefaultIdProvider implements IdProvider {
     public synchronized long[] nextIds(int size) {
         return doNextIds(size, null);
     }
-
 
 }

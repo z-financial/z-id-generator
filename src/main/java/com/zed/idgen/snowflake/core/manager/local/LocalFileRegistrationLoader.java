@@ -28,7 +28,7 @@ import java.util.stream.Stream;
  * omit ids, names, and workerId, but any value it does set must match the
  * filename and the loaded domain config.
  */
-public class LocalFileRegistrationLoader implements RegistrationLoader {
+class LocalFileRegistrationLoader implements RegistrationLoader {
     private static final String LOCAL_CONFIG_ROOT = "uid-register";
     private static final String DOMAIN_CONFIG_FILE = "domain.yml";
     private static final String GENERATOR_CONFIG_DIR = "generator";
@@ -42,7 +42,7 @@ public class LocalFileRegistrationLoader implements RegistrationLoader {
      * Creates a loader for ./uid-register/[baseDir].
      * The baseDir value must be one safe path segment and must already exist.
      */
-    public LocalFileRegistrationLoader(String baseDir) {
+    LocalFileRegistrationLoader(String baseDir) {
         this(Path.of(LOCAL_CONFIG_ROOT), baseDir);
     }
 
@@ -51,6 +51,10 @@ public class LocalFileRegistrationLoader implements RegistrationLoader {
         this.basePath = resolveBasePath(rootPath, baseDir);
         this.domainConfigPath = basePath.resolve(DOMAIN_CONFIG_FILE);
         this.generatorConfigDir = requireReadableDirectory(basePath.resolve(GENERATOR_CONFIG_DIR), "generator config directory");
+    }
+
+    Path basePath() {
+        return basePath;
     }
 
     /**

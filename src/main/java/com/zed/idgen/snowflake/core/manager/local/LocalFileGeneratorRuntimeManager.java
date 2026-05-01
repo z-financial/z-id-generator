@@ -1,0 +1,322 @@
+package com.zed.idgen.snowflake.core.manager.local;
+
+import com.zed.idgen.snowflake.core.IdGenerator;
+import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
+import com.zed.idgen.snowflake.core.generator.GeneratorStatus;
+import com.zed.idgen.snowflake.core.generator.IdGeneratorFactory;
+import com.zed.idgen.snowflake.core.generator.IdGeneratorInstance;
+import com.zed.idgen.snowflake.core.manager.GeneratorParam;
+import com.zed.idgen.snowflake.core.manager.GeneratorRuntimeManager;
+import com.zed.idgen.snowflake.core.manager.RegistrationLoader;
+import com.zed.idgen.snowflake.core.model.GeneratorConfig;
+import com.zed.idgen.snowflake.core.model.GeneratorInstanceProperties;
+import com.zed.idgen.snowflake.core.model.GeneratorProperties;
+import com.zed.idgen.snowflake.core.model.IdDomainInfo;
+
+import java.io.IOException;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.time.Instant;
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * Single-machine runtime manager for local file registration.
+ * <p>
+ * The manager creates one running.placeholder file under
+ * ./uid-register/[baseDir] to make accidental multi-process local usage
+ * visible. It does not parse YAML directly; LocalFileRegistrationLoader owns
+ * file layout and registration validation.
+ */
+public class LocalFileGeneratorRuntimeManager implements GeneratorRuntimeManager, AutoCloseable {
+    private static final String RUNNING_PLACEHOLDER_FILE = "running.placeholder";
+
+    private final RegistrationLoader registrationLoader;
+    private final Path placeholderPath;
+    private final ConcurrentHashMap<Long, RuntimeGeneratorEntry> byGeneratorId = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Long> generatorNameToId = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Long, Long> workerIdToGeneratorId = new ConcurrentHashMap<>();
+    private volatile boolean closed;
+
+    public LocalFileGeneratorRuntimeManager(String baseDir) {
+        this(new LocalFileRegistrationLoader(baseDir));
+    }
+
+    LocalFileGeneratorRuntimeManager(Path localConfigRoot, String baseDir) {
+        this(new LocalFileRegistrationLoader(localConfigRoot, baseDir));
+    }
+
+    LocalFileGeneratorRuntimeManager(LocalFileRegistrationLoader registrationLoader) {
+        if (registrationLoader == null) {
+            throw new InvalidConfigException("registration loader must not be null");
+        }
+        this.registrationLoader = registrationLoader;
+        this.placeholderPath = registrationLoader.basePath().resolve(RUNNING_PLACEHOLDER_FILE);
+        createRunningPlaceholder();
+    }
+
+    @Override
+    public IdDomainInfo getDomainInfo() {
+        ensureOpen();
+        return registrationLoader.loadDomain();
+    }
+
+    @Override
+    public GeneratorProperties getGeneratorProperties(GeneratorParam generatorParam) {
+        ensureOpen();
+        requireGeneratorParam(generatorParam);
+        return registrationLoader.loadGenerator(generatorParam);
+    }
+
+    @Override
+    public IdGenerator getGeneratorInstance(GeneratorParam generatorParam) {
+        ensureOpen();
+        requireGeneratorParam(generatorParam);
+        RuntimeGeneratorEntry entry = findRuntimeEntry(generatorParam);
+        return entry == null ? null : entry.generator();
+    }
+
+    @Override
+    public synchronized IdGenerator startGeneratorInstance(GeneratorParam generatorParam) {
+        ensureOpen();
+        requireGeneratorParam(generatorParam);
+        GeneratorProperties properties = registrationLoader.loadGenerator(generatorParam);
+        return createAndRegister(properties).generator();
+    }
+
+    @Override
+    public synchronized IdGenerator startGeneratorInstanceIfNotExists(GeneratorParam generatorParam) {
+        ensureOpen();
+        requireGeneratorParam(generatorParam);
+        RuntimeGeneratorEntry existingByParam = findRuntimeEntry(generatorParam);
+        if (existingByParam != null) {
+            return existingByParam.generator();
+        }
+
+        GeneratorProperties properties = registrationLoader.loadGenerator(generatorParam);
+        RuntimeGeneratorEntry existingByLoadedProperties = findExistingByLoadedProperties(properties);
+        if (existingByLoadedProperties != null) {
+            return existingByLoadedProperties.generator();
+        }
+
+        return createAndRegister(properties).generator();
+    }
+
+    @Override
+    public synchronized boolean stopGeneratorInstance(GeneratorParam generatorParam) {
+        ensureOpen();
+        requireGeneratorParam(generatorParam);
+        RuntimeGeneratorEntry entry = findRuntimeEntry(generatorParam);
+        if (entry == null) {
+            return false;
+        }
+
+        entry.generator().setStatus(GeneratorStatus.STOPPED);
+        byGeneratorId.remove(entry.generatorId(), entry);
+        generatorNameToId.remove(entry.generatorName(), entry.generatorId());
+        workerIdToGeneratorId.remove(entry.workerId(), entry.generatorId());
+        return true;
+    }
+
+    public synchronized void shutdown() {
+        if (closed) {
+            return;
+        }
+        for (RuntimeGeneratorEntry entry : byGeneratorId.values()) {
+            entry.generator().setStatus(GeneratorStatus.STOPPED);
+        }
+        byGeneratorId.clear();
+        generatorNameToId.clear();
+        workerIdToGeneratorId.clear();
+        deleteRunningPlaceholder();
+        closed = true;
+    }
+
+    @Override
+    public void close() {
+        shutdown();
+    }
+
+    private RuntimeGeneratorEntry createAndRegister(GeneratorProperties properties) {
+        GeneratorInstanceProperties instanceProperties = GeneratorInstanceProperties.from(properties);
+        GeneratorConfig config = properties.generatorConfig();
+        long workerId = resolveSingleWorker(instanceProperties.workers());
+        assertNoRunningConflict(config.generatorId(), config.generatorName(), workerId);
+
+        IdGeneratorInstance generator = IdGeneratorFactory.create(instanceProperties);
+        RuntimeGeneratorEntry entry = new RuntimeGeneratorEntry(
+                config.generatorId(),
+                config.generatorName(),
+                workerId,
+                generator
+        );
+
+        try {
+            generator.setStatus(GeneratorStatus.RUNNING);
+            publish(entry);
+            return entry;
+        } catch (RuntimeException e) {
+            rollback(entry);
+            generator.setStatus(GeneratorStatus.STOPPED);
+            throw e;
+        }
+    }
+
+    private void publish(RuntimeGeneratorEntry entry) {
+        RuntimeGeneratorEntry existingById = byGeneratorId.putIfAbsent(entry.generatorId(), entry);
+        if (existingById != null) {
+            throw new IllegalStateException("generator id is already running: " + entry.generatorId());
+        }
+
+        Long existingByName = generatorNameToId.putIfAbsent(entry.generatorName(), entry.generatorId());
+        if (existingByName != null) {
+            throw new IllegalStateException("generator name is already running: " + entry.generatorName());
+        }
+
+        Long existingByWorker = workerIdToGeneratorId.putIfAbsent(entry.workerId(), entry.generatorId());
+        if (existingByWorker != null) {
+            throw new IllegalStateException("worker id is already running: " + entry.workerId());
+        }
+    }
+
+    private void rollback(RuntimeGeneratorEntry entry) {
+        byGeneratorId.remove(entry.generatorId(), entry);
+        generatorNameToId.remove(entry.generatorName(), entry.generatorId());
+        workerIdToGeneratorId.remove(entry.workerId(), entry.generatorId());
+    }
+
+    private RuntimeGeneratorEntry findRuntimeEntry(GeneratorParam generatorParam) {
+        if (generatorParam == null) {
+            return null;
+        }
+        Long generatorId = generatorParam.generatorId();
+        String generatorName = generatorParam.generatorName();
+
+        if (generatorId != null) {
+            RuntimeGeneratorEntry entry = byGeneratorId.get(generatorId);
+            if (entry == null) {
+                return null;
+            }
+            if (generatorName != null && !generatorName.equals(entry.generatorName())) {
+                return null;
+            }
+            return entry;
+        }
+
+        Long indexedGeneratorId = generatorNameToId.get(generatorName);
+        if (indexedGeneratorId == null) {
+            return null;
+        }
+        RuntimeGeneratorEntry entry = byGeneratorId.get(indexedGeneratorId);
+        if (entry == null || !entry.generatorName().equals(generatorName)) {
+            return null;
+        }
+        return entry;
+    }
+
+    private RuntimeGeneratorEntry findExistingByLoadedProperties(GeneratorProperties properties) {
+        GeneratorConfig config = properties.generatorConfig();
+        long workerId = resolveSingleWorker(properties.workerIds());
+
+        RuntimeGeneratorEntry existingById = byGeneratorId.get(config.generatorId());
+        if (existingById != null) {
+            if (!existingById.generatorName().equals(config.generatorName())) {
+                throw new IllegalStateException("generator id is already running: " + config.generatorId());
+            }
+            return existingById;
+        }
+
+        Long existingIdByName = generatorNameToId.get(config.generatorName());
+        if (existingIdByName != null) {
+            RuntimeGeneratorEntry existingByName = byGeneratorId.get(existingIdByName);
+            if (existingByName != null) {
+                throw new IllegalStateException("generator name is already running: " + config.generatorName());
+            }
+        }
+
+        Long existingIdByWorker = workerIdToGeneratorId.get(workerId);
+        if (existingIdByWorker != null) {
+            throw new IllegalStateException("worker id is already running: " + workerId);
+        }
+        return null;
+    }
+
+    private void assertNoRunningConflict(long generatorId, String generatorName, long workerId) {
+        if (byGeneratorId.containsKey(generatorId)) {
+            throw new IllegalStateException("generator id is already running: " + generatorId);
+        }
+        if (generatorNameToId.containsKey(generatorName)) {
+            throw new IllegalStateException("generator name is already running: " + generatorName);
+        }
+        if (workerIdToGeneratorId.containsKey(workerId)) {
+            throw new IllegalStateException("worker id is already running: " + workerId);
+        }
+    }
+
+    private static long resolveSingleWorker(List<Long> workers) {
+        if (workers == null || workers.size() != 1 || workers.getFirst() == null) {
+            throw new InvalidConfigException("exactly one worker is required for local runtime manager");
+        }
+        return workers.getFirst();
+    }
+
+    private void createRunningPlaceholder() {
+        try {
+            Files.createFile(placeholderPath);
+            Files.writeString(placeholderPath, runningPlaceholderContent(), StandardOpenOption.WRITE);
+        } catch (FileAlreadyExistsException e) {
+            throw new InvalidConfigException("local runtime placeholder already exists: " + placeholderPath
+                    + ". Another local runtime may be running. If not, inspect and delete this file manually.", e);
+        } catch (IOException e) {
+            tryDeletePlaceholderAfterFailedCreate();
+            throw new InvalidConfigException("failed to create local runtime placeholder: " + placeholderPath, e);
+        }
+    }
+
+    private String runningPlaceholderContent() {
+        return "createdAt: " + Instant.now() + System.lineSeparator()
+                + "pid: " + ProcessHandle.current().pid() + System.lineSeparator()
+                + "user: " + System.getProperty("user.name", "unknown") + System.lineSeparator()
+                + "host: " + currentHostName() + System.lineSeparator();
+    }
+
+    private String currentHostName() {
+        try {
+            return InetAddress.getLocalHost().getHostName();
+        } catch (UnknownHostException e) {
+            return "unknown";
+        }
+    }
+
+    private void tryDeletePlaceholderAfterFailedCreate() {
+        try {
+            Files.deleteIfExists(placeholderPath);
+        } catch (IOException ignored) {
+            // The original create/write failure is more useful to the caller.
+        }
+    }
+
+    private void deleteRunningPlaceholder() {
+        try {
+            Files.deleteIfExists(placeholderPath);
+        } catch (IOException e) {
+            throw new InvalidConfigException("failed to delete local runtime placeholder: " + placeholderPath, e);
+        }
+    }
+
+    private void ensureOpen() {
+        if (closed) {
+            throw new IllegalStateException("local file generator runtime manager is closed");
+        }
+    }
+
+    private static void requireGeneratorParam(GeneratorParam generatorParam) {
+        if (generatorParam == null) {
+            throw new InvalidConfigException("generator param must not be null");
+        }
+    }
+}

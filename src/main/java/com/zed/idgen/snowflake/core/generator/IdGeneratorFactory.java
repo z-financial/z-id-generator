@@ -1,6 +1,5 @@
 package com.zed.idgen.snowflake.core.generator;
 
-import com.zed.idgen.snowflake.core.IdGenerator;
 import com.zed.idgen.snowflake.core.component.IdCodec;
 import com.zed.idgen.snowflake.core.component.provider.impl.DefaultIdProvider;
 import com.zed.idgen.snowflake.core.model.GeneratorPolicy;
@@ -14,7 +13,7 @@ public final class IdGeneratorFactory {
     private IdGeneratorFactory() {
     }
 
-    public static IdGenerator create(GeneratorInstanceProperties properties) {
+    public static IdGeneratorInstance create(GeneratorInstanceProperties properties) {
         if (properties == null) {
             throw new InvalidConfigException("generator instance properties must not be null");
         }
