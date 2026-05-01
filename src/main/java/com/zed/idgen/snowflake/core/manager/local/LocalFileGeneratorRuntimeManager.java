@@ -21,8 +21,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.List;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Map;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 /**
  * Single-machine runtime manager for local file registration.
@@ -37,10 +40,23 @@ public class LocalFileGeneratorRuntimeManager implements GeneratorRuntimeManager
 
     private final RegistrationLoader registrationLoader;
     private final Path placeholderPath;
-    private final ConcurrentHashMap<Long, RuntimeGeneratorEntry> byGeneratorId = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, Long> generatorNameToId = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<Long, Long> workerIdToGeneratorId = new ConcurrentHashMap<>();
-    private volatile boolean closed;
+    /*
+     * These three maps form one logical runtime index. A lookup by name reads
+     * generatorNameToId and then byGeneratorId, so the operation must observe a
+     * consistent snapshot when start/stop/reload updates multiple maps. A
+     * ReentrantReadWriteLock lets frequent lookups run together under the read
+     * lock, while rare lifecycle writes take the write lock and update all
+     * indexes atomically. With that external lock, plain HashMap is simpler and
+     * faster than paying ConcurrentHashMap costs per index while still lacking
+     * cross-map atomicity.
+     */
+    private final ReentrantReadWriteLock runtimeLock = new ReentrantReadWriteLock();
+    private final Lock readLock = runtimeLock.readLock();
+    private final Lock writeLock = runtimeLock.writeLock();
+    private final Map<Long, RuntimeGeneratorEntry> byGeneratorId = new HashMap<>();
+    private final Map<String, Long> generatorNameToId = new HashMap<>();
+    private final Map<Long, Long> workerIdToGeneratorId = new HashMap<>();
+    private boolean closed;
 
     public LocalFileGeneratorRuntimeManager(String baseDir) {
         this(new LocalFileRegistrationLoader(baseDir));
@@ -51,89 +67,131 @@ public class LocalFileGeneratorRuntimeManager implements GeneratorRuntimeManager
     }
 
     LocalFileGeneratorRuntimeManager(LocalFileRegistrationLoader registrationLoader) {
+        this(registrationLoader, registrationLoader == null ? null : registrationLoader.basePath());
+    }
+
+    LocalFileGeneratorRuntimeManager(RegistrationLoader registrationLoader, Path basePath) {
         if (registrationLoader == null) {
             throw new InvalidConfigException("registration loader must not be null");
         }
+        if (basePath == null) {
+            throw new InvalidConfigException("local runtime base path must not be null");
+        }
         this.registrationLoader = registrationLoader;
-        this.placeholderPath = registrationLoader.basePath().resolve(RUNNING_PLACEHOLDER_FILE);
+        this.placeholderPath = basePath.resolve(RUNNING_PLACEHOLDER_FILE);
         createRunningPlaceholder();
     }
 
     @Override
     public IdDomainInfo getDomainInfo() {
-        ensureOpen();
-        return registrationLoader.loadDomain();
+        readLock.lock();
+        try {
+            ensureOpen();
+            return registrationLoader.loadDomain();
+        } finally {
+            readLock.unlock();
+        }
     }
 
     @Override
     public GeneratorProperties getGeneratorProperties(GeneratorParam generatorParam) {
-        ensureOpen();
         requireGeneratorParam(generatorParam);
-        return registrationLoader.loadGenerator(generatorParam);
+        readLock.lock();
+        try {
+            ensureOpen();
+            return registrationLoader.loadGenerator(generatorParam);
+        } finally {
+            readLock.unlock();
+        }
     }
 
     @Override
     public IdGenerator getGeneratorInstance(GeneratorParam generatorParam) {
-        ensureOpen();
         requireGeneratorParam(generatorParam);
-        RuntimeGeneratorEntry entry = findRuntimeEntry(generatorParam);
-        return entry == null ? null : entry.generator();
+        readLock.lock();
+        try {
+            ensureOpen();
+            RuntimeGeneratorEntry entry = findRuntimeEntry(generatorParam);
+            return entry == null ? null : entry.generator();
+        } finally {
+            readLock.unlock();
+        }
     }
 
     @Override
-    public synchronized IdGenerator startGeneratorInstance(GeneratorParam generatorParam) {
-        ensureOpen();
+    public IdGenerator startGeneratorInstance(GeneratorParam generatorParam) {
         requireGeneratorParam(generatorParam);
-        GeneratorProperties properties = registrationLoader.loadGenerator(generatorParam);
-        return createAndRegister(properties).generator();
+        writeLock.lock();
+        try {
+            ensureOpen();
+            GeneratorProperties properties = registrationLoader.loadGenerator(generatorParam);
+            return createAndRegister(properties).generator();
+        } finally {
+            writeLock.unlock();
+        }
     }
 
     @Override
-    public synchronized IdGenerator startGeneratorInstanceIfNotExists(GeneratorParam generatorParam) {
-        ensureOpen();
+    public IdGenerator startGeneratorInstanceIfNotExists(GeneratorParam generatorParam) {
         requireGeneratorParam(generatorParam);
-        RuntimeGeneratorEntry existingByParam = findRuntimeEntry(generatorParam);
-        if (existingByParam != null) {
-            return existingByParam.generator();
-        }
+        writeLock.lock();
+        try {
+            ensureOpen();
+            RuntimeGeneratorEntry existingByParam = findRuntimeEntry(generatorParam);
+            if (existingByParam != null) {
+                return existingByParam.generator();
+            }
 
-        GeneratorProperties properties = registrationLoader.loadGenerator(generatorParam);
-        RuntimeGeneratorEntry existingByLoadedProperties = findExistingByLoadedProperties(properties);
-        if (existingByLoadedProperties != null) {
-            return existingByLoadedProperties.generator();
-        }
+            GeneratorProperties properties = registrationLoader.loadGenerator(generatorParam);
+            RuntimeGeneratorEntry existingByLoadedProperties = findExistingByLoadedProperties(properties);
+            if (existingByLoadedProperties != null) {
+                return existingByLoadedProperties.generator();
+            }
 
-        return createAndRegister(properties).generator();
+            return createAndRegister(properties).generator();
+        } finally {
+            writeLock.unlock();
+        }
     }
 
     @Override
-    public synchronized boolean stopGeneratorInstance(GeneratorParam generatorParam) {
-        ensureOpen();
+    public boolean stopGeneratorInstance(GeneratorParam generatorParam) {
         requireGeneratorParam(generatorParam);
-        RuntimeGeneratorEntry entry = findRuntimeEntry(generatorParam);
-        if (entry == null) {
-            return false;
-        }
+        writeLock.lock();
+        try {
+            ensureOpen();
+            RuntimeGeneratorEntry entry = findRuntimeEntry(generatorParam);
+            if (entry == null) {
+                return false;
+            }
 
-        entry.generator().setStatus(GeneratorStatus.STOPPED);
-        byGeneratorId.remove(entry.generatorId(), entry);
-        generatorNameToId.remove(entry.generatorName(), entry.generatorId());
-        workerIdToGeneratorId.remove(entry.workerId(), entry.generatorId());
-        return true;
-    }
-
-    public synchronized void shutdown() {
-        if (closed) {
-            return;
-        }
-        for (RuntimeGeneratorEntry entry : byGeneratorId.values()) {
             entry.generator().setStatus(GeneratorStatus.STOPPED);
+            byGeneratorId.remove(entry.generatorId());
+            generatorNameToId.remove(entry.generatorName());
+            workerIdToGeneratorId.remove(entry.workerId());
+            return true;
+        } finally {
+            writeLock.unlock();
         }
-        byGeneratorId.clear();
-        generatorNameToId.clear();
-        workerIdToGeneratorId.clear();
-        deleteRunningPlaceholder();
-        closed = true;
+    }
+
+    public void shutdown() {
+        writeLock.lock();
+        try {
+            if (closed) {
+                return;
+            }
+            for (RuntimeGeneratorEntry entry : byGeneratorId.values()) {
+                entry.generator().setStatus(GeneratorStatus.STOPPED);
+            }
+            byGeneratorId.clear();
+            generatorNameToId.clear();
+            workerIdToGeneratorId.clear();
+            deleteRunningPlaceholder();
+            closed = true;
+        } finally {
+            writeLock.unlock();
+        }
     }
 
     @Override
@@ -167,26 +225,25 @@ public class LocalFileGeneratorRuntimeManager implements GeneratorRuntimeManager
     }
 
     private void publish(RuntimeGeneratorEntry entry) {
-        RuntimeGeneratorEntry existingById = byGeneratorId.putIfAbsent(entry.generatorId(), entry);
-        if (existingById != null) {
+        if (byGeneratorId.containsKey(entry.generatorId())) {
             throw new IllegalStateException("generator id is already running: " + entry.generatorId());
         }
-
-        Long existingByName = generatorNameToId.putIfAbsent(entry.generatorName(), entry.generatorId());
-        if (existingByName != null) {
+        if (generatorNameToId.containsKey(entry.generatorName())) {
             throw new IllegalStateException("generator name is already running: " + entry.generatorName());
         }
-
-        Long existingByWorker = workerIdToGeneratorId.putIfAbsent(entry.workerId(), entry.generatorId());
-        if (existingByWorker != null) {
+        if (workerIdToGeneratorId.containsKey(entry.workerId())) {
             throw new IllegalStateException("worker id is already running: " + entry.workerId());
         }
+
+        byGeneratorId.put(entry.generatorId(), entry);
+        generatorNameToId.put(entry.generatorName(), entry.generatorId());
+        workerIdToGeneratorId.put(entry.workerId(), entry.generatorId());
     }
 
     private void rollback(RuntimeGeneratorEntry entry) {
-        byGeneratorId.remove(entry.generatorId(), entry);
-        generatorNameToId.remove(entry.generatorName(), entry.generatorId());
-        workerIdToGeneratorId.remove(entry.workerId(), entry.generatorId());
+        byGeneratorId.remove(entry.generatorId());
+        generatorNameToId.remove(entry.generatorName());
+        workerIdToGeneratorId.remove(entry.workerId());
     }
 
     private RuntimeGeneratorEntry findRuntimeEntry(GeneratorParam generatorParam) {
