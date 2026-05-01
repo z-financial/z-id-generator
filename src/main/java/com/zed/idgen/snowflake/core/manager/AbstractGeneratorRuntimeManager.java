@@ -109,11 +109,6 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
             }
 
             GeneratorProperties properties = registrationLoader.loadGenerator(generatorParam);
-            RuntimeGeneratorEntry existingByLoadedProperties = findExistingByLoadedProperties(properties);
-            if (existingByLoadedProperties != null) {
-                return existingByLoadedProperties.generator();
-            }
-
             return createAndRegister(properties).generator();
         } finally {
             writeLock.unlock();
@@ -246,33 +241,6 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
             return null;
         }
         return entry;
-    }
-
-    private RuntimeGeneratorEntry findExistingByLoadedProperties(GeneratorProperties properties) {
-        GeneratorConfig config = properties.generatorConfig();
-        long workerId = resolveSingleWorker(properties.workerIds());
-
-        RuntimeGeneratorEntry existingById = byGeneratorId.get(config.generatorId());
-        if (existingById != null) {
-            if (!existingById.generatorName().equals(config.generatorName())) {
-                throw new IllegalStateException("generator id is already running: " + config.generatorId());
-            }
-            return existingById;
-        }
-
-        Long existingIdByName = generatorNameToId.get(config.generatorName());
-        if (existingIdByName != null) {
-            RuntimeGeneratorEntry existingByName = byGeneratorId.get(existingIdByName);
-            if (existingByName != null) {
-                throw new IllegalStateException("generator name is already running: " + config.generatorName());
-            }
-        }
-
-        Long existingIdByWorker = workerIdToGeneratorId.get(workerId);
-        if (existingIdByWorker != null) {
-            throw new IllegalStateException("worker id is already running: " + workerId);
-        }
-        return null;
     }
 
     private void assertNoRunningConflict(long generatorId, String generatorName, long workerId) {
