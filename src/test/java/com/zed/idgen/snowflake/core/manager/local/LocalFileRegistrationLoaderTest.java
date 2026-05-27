@@ -38,7 +38,7 @@ class LocalFileRegistrationLoaderTest {
         assertEquals("order-id-east", properties.generatorConfig().generatorName());
         assertEquals(List.of(7L), properties.workerIds());
 
-        IdDomainInfo domainInfo = loader.loadDomain();
+        IdDomainInfo domainInfo = loader.getDomainInfo();
         assertEquals(100L, domainInfo.domainId());
         assertEquals("orders", domainInfo.domainName());
 
@@ -56,6 +56,32 @@ class LocalFileRegistrationLoaderTest {
         assertEquals(11L, instanceProperties.generatorId());
         assertEquals("order-id-east", instanceProperties.generatorName());
         assertEquals(List.of(7L), instanceProperties.workers());
+    }
+
+    @Test
+    void keepsDomainInfoStableAfterDomainFileChanges() throws IOException {
+        Path root = prepareBase("stable-domain");
+        writeGenerator(root, "stable-domain", "11-7-alpha.yml", generatorYaml(""));
+
+        LocalFileRegistrationLoader loader = new LocalFileRegistrationLoader(root, "stable-domain");
+        Files.writeString(root.resolve("stable-domain").resolve("domain.yml"), """
+                domainId: 200
+                domainName: changed
+                prefixType: POSITIVE_SIGNAL
+                timeBit: 41
+                workerBit: 10
+                sequenceBit: 12
+                epochStartMs: 1700000000000
+                timeUnit: MILLISECOND
+                """);
+
+        IdDomainInfo domainInfo = loader.getDomainInfo();
+        GeneratorProperties properties = loader.loadGenerator(new GeneratorParam(null, "alpha"));
+
+        assertEquals(100L, domainInfo.domainId());
+        assertEquals("orders", domainInfo.domainName());
+        assertEquals(100L, properties.idDomainInfo().domainId());
+        assertEquals("orders", properties.idDomainInfo().domainName());
     }
 
     @Test

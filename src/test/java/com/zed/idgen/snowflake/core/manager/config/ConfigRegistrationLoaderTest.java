@@ -32,7 +32,7 @@ class ConfigRegistrationLoaderTest {
                 )
         ));
 
-        IdDomainInfo domainInfo = loader.loadDomain();
+        IdDomainInfo domainInfo = loader.getDomainInfo();
         assertEquals(PrefixType.POSITIVE_SIGNAL, domainInfo.prefixType());
         assertEquals(TimeUnit.MILLISECOND, domainInfo.timeUnit());
 

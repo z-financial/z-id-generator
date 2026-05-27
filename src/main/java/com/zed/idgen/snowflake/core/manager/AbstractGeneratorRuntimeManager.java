@@ -53,7 +53,7 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
         readLock.lock();
         try {
             ensureOpen();
-            return registrationLoader.loadDomain();
+            return registrationLoader.getDomainInfo();
         } finally {
             readLock.unlock();
         }

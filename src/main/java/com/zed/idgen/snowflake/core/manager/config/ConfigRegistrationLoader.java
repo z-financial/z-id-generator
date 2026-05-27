@@ -46,7 +46,7 @@ public final class ConfigRegistrationLoader implements RegistrationLoader {
     }
 
     @Override
-    public IdDomainInfo loadDomain() {
+    public IdDomainInfo getDomainInfo() {
         return domainInfo;
     }
 

@@ -27,6 +27,11 @@ import java.util.stream.Stream;
  * The filename is part of the local registration identity. Generator YAML may
  * omit ids, names, and workerId, but any value it does set must match the
  * filename and the loaded domain config.
+ * <p>
+ * domain.yml is read once during loader construction because domain info
+ * defines the UID bit layout and decode rules. Generator files are still read
+ * on each loadGenerator call so local generator changes can be picked up
+ * without changing the domain snapshot.
  */
 class LocalFileRegistrationLoader implements RegistrationLoader {
     private static final String LOCAL_CONFIG_ROOT = "uid-register";
@@ -37,6 +42,7 @@ class LocalFileRegistrationLoader implements RegistrationLoader {
     private final Path basePath;
     private final Path domainConfigPath;
     private final Path generatorConfigDir;
+    private final IdDomainInfo domainInfo;
 
     /**
      * Creates a loader for ./uid-register/[baseDir].
@@ -50,6 +56,7 @@ class LocalFileRegistrationLoader implements RegistrationLoader {
         Path rootPath = requireReadableDirectory(toAbsolutePath(localConfigRoot), "local registration root");
         this.basePath = resolveBasePath(rootPath, baseDir);
         this.domainConfigPath = basePath.resolve(DOMAIN_CONFIG_FILE);
+        this.domainInfo = readDomainInfo(domainConfigPath);
         this.generatorConfigDir = requireReadableDirectory(basePath.resolve(GENERATOR_CONFIG_DIR), "generator config directory");
     }
 
@@ -67,7 +74,6 @@ class LocalFileRegistrationLoader implements RegistrationLoader {
         if (generatorParam == null) {
             throw new InvalidConfigException("generator param must not be null");
         }
-        IdDomainInfo domainInfo = loadDomainInfo();
         GeneratorConfigIndex index = loadGeneratorConfigIndex();
         GeneratorConfigFile configFile = findGeneratorConfig(generatorParam, index);
         return loadGeneratorProperties(configFile, domainInfo);
@@ -104,18 +110,19 @@ class LocalFileRegistrationLoader implements RegistrationLoader {
     }
 
     /**
-     * Loads the single domain.yml for this local registration baseDir.
+     * Returns the startup domain snapshot. This intentionally does not reread
+     * domain.yml, because changing bit layout/epoch/prefix while a process is
+     * running can make generated UIDs duplicated or undecodable.
      */
     @Override
-    public IdDomainInfo loadDomain() {
-        return loadDomainInfo();
+    public IdDomainInfo getDomainInfo() {
+        return domainInfo;
     }
 
     /**
-     * Loads the single domain.yml for this local registration baseDir without
-     * applying caller-specific domain expectations.
+     * Reads and validates domain.yml once while constructing the loader.
      */
-    private IdDomainInfo loadDomainInfo() {
+    private static IdDomainInfo readDomainInfo(Path domainConfigPath) {
         requireReadableFile(domainConfigPath, "domain config file");
         IdDomainInfo domainInfo = YamlConfigLoader.load(domainConfigPath, IdDomainInfo.class);
         if (domainInfo == null) {

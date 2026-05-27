@@ -268,7 +268,7 @@ class LocalFileGeneratorRuntimeManagerTest {
         }
 
         @Override
-        public IdDomainInfo loadDomain() {
+        public IdDomainInfo getDomainInfo() {
             return domainInfo();
         }
 
