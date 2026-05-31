@@ -6,7 +6,6 @@ import com.zed.idgen.snowflake.core.constant.IdRunOutPolicy;
 import com.zed.idgen.snowflake.core.constant.PrefixType;
 import com.zed.idgen.snowflake.core.constant.TimeUnit;
 import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
-import com.zed.idgen.snowflake.core.manager.GeneratorParam;
 import com.zed.idgen.snowflake.core.manager.RegistrationLoader;
 import com.zed.idgen.snowflake.core.manager.config.ConfigRuntimeConfig.GenerationPolicyConfig;
 import com.zed.idgen.snowflake.core.manager.config.ConfigRuntimeConfig.IdDomainConfig;
@@ -52,31 +51,23 @@ public final class ConfigRegistrationLoader implements RegistrationLoader {
     }
 
     @Override
-    public List<GeneratorProperties> loadGeneratorProperties(GeneratorParam generatorParam) {
-        if (generatorParam == null) {
-            throw new InvalidConfigException("generator param must not be null");
+    public long resolveGeneratorId(String generatorName) {
+        String normalizedName = requireText(generatorName, "generator name");
+        Long generatorId = generatorNameToId.get(normalizedName);
+        if (generatorId == null) {
+            throw new InvalidConfigException("generator config not found by name: " + normalizedName);
         }
+        return generatorId;
+    }
 
-        Long generatorId = generatorParam.generatorId();
-        String generatorName = generatorParam.generatorName();
-        if (generatorId != null) {
-            List<GeneratorProperties> properties = byGeneratorId.get(generatorId);
-            if (properties == null || properties.isEmpty()) {
-                throw new InvalidConfigException("generator config not found by id: " + generatorId);
-            }
-            String configName = properties.getFirst().generatorConfig().generatorName();
-            if (generatorName != null && !generatorName.equals(configName)) {
-                throw new InvalidConfigException("generator name mismatch, requested: " + generatorName
-                        + ", config: " + configName);
-            }
-            return properties;
+    @Override
+    public List<GeneratorProperties> loadGeneratorProperties(long generatorId) {
+        validateGeneratorId(generatorId);
+        List<GeneratorProperties> properties = byGeneratorId.get(generatorId);
+        if (properties == null || properties.isEmpty()) {
+            throw new InvalidConfigException("generator config not found by id: " + generatorId);
         }
-
-        Long indexedGeneratorId = generatorNameToId.get(generatorName);
-        if (indexedGeneratorId == null) {
-            throw new InvalidConfigException("generator config not found by name: " + generatorName);
-        }
-        return byGeneratorId.get(indexedGeneratorId);
+        return properties;
     }
 
     private static IdDomainInfo resolveDomainInfo(IdDomainConfig config) {
@@ -176,10 +167,14 @@ public final class ConfigRegistrationLoader implements RegistrationLoader {
         if (generatorId == null) {
             throw new InvalidConfigException("generator id must not be null");
         }
+        validateGeneratorId(generatorId);
+        return generatorId;
+    }
+
+    private static void validateGeneratorId(long generatorId) {
         if (generatorId < 0) {
             throw new InvalidConfigException("generator id must not be negative");
         }
-        return generatorId;
     }
 
     private static void validateWorkerId(long workerId, long maxWorker) {

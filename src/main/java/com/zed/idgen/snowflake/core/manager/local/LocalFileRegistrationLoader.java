@@ -1,7 +1,6 @@
 package com.zed.idgen.snowflake.core.manager.local;
 
 import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
-import com.zed.idgen.snowflake.core.manager.GeneratorParam;
 import com.zed.idgen.snowflake.core.manager.RegistrationLoader;
 import com.zed.idgen.snowflake.core.model.GeneratorConfig;
 import com.zed.idgen.snowflake.core.model.GeneratorProperties;
@@ -65,48 +64,35 @@ class LocalFileRegistrationLoader implements RegistrationLoader {
     }
 
     /**
-     * Loads registered worker bindings by GeneratorParam. Local file mode maps
+     * Resolves the local filename-backed generator name to its id.
+     */
+    @Override
+    public long resolveGeneratorId(String generatorName) {
+        String normalizedName = normalizeRequestedGeneratorName(generatorName);
+        GeneratorConfigIndex index = loadGeneratorConfigIndex();
+        GeneratorConfigFile configFile = index.byGeneratorName().get(normalizedName);
+        if (configFile == null) {
+            throw new InvalidConfigException("generator config not found by name: " + normalizedName);
+        }
+        return configFile.generatorId();
+    }
+
+    /**
+     * Loads registered worker bindings by generator id. Local file mode maps
      * one generator file to one worker binding, so the returned list currently
      * contains exactly one item.
      */
     @Override
-    public List<GeneratorProperties> loadGeneratorProperties(GeneratorParam generatorParam) {
-        if (generatorParam == null) {
-            throw new InvalidConfigException("generator param must not be null");
+    public List<GeneratorProperties> loadGeneratorProperties(long generatorId) {
+        if (generatorId < 0) {
+            throw new InvalidConfigException("generator id must not be negative");
         }
         GeneratorConfigIndex index = loadGeneratorConfigIndex();
-        GeneratorConfigFile configFile = findGeneratorConfig(generatorParam, index);
-        return List.of(loadGeneratorProperties(configFile, domainInfo));
-    }
-
-    /**
-     * Selects one indexed generator config. If both id and name are provided,
-     * the id locates the file and the name must match the filename identity.
-     */
-    private static GeneratorConfigFile findGeneratorConfig(GeneratorParam generatorParam, GeneratorConfigIndex index) {
-        Long generatorId = generatorParam.generatorId();
-        String generatorName = generatorParam.generatorName();
-        if (generatorName != null) {
-            validateGeneratorName(generatorName, "requested generator name");
-        }
-
-        if (generatorId != null) {
-            GeneratorConfigFile configFile = index.byGeneratorId().get(generatorId);
-            if (configFile == null) {
-                throw new InvalidConfigException("generator config not found by id: " + generatorId);
-            }
-            if (generatorName != null && !generatorName.equals(configFile.generatorName())) {
-                throw new InvalidConfigException("generator name mismatch, requested: " + generatorName
-                        + ", filename: " + configFile.generatorName());
-            }
-            return configFile;
-        }
-
-        GeneratorConfigFile configFile = index.byGeneratorName().get(generatorName);
+        GeneratorConfigFile configFile = index.byGeneratorId().get(generatorId);
         if (configFile == null) {
-            throw new InvalidConfigException("generator config not found by name: " + generatorName);
+            throw new InvalidConfigException("generator config not found by id: " + generatorId);
         }
-        return configFile;
+        return List.of(loadGeneratorProperties(configFile, domainInfo));
     }
 
     /**
@@ -361,6 +347,15 @@ class LocalFileRegistrationLoader implements RegistrationLoader {
         } catch (IllegalArgumentException e) {
             throw new InvalidConfigException("invalid generator name: " + target, e);
         }
+    }
+
+    private static String normalizeRequestedGeneratorName(String generatorName) {
+        if (StringUtil.isEmpty(generatorName)) {
+            throw new InvalidConfigException("generator name must not be blank");
+        }
+        String normalizedName = generatorName.trim();
+        validateGeneratorName(normalizedName, "requested generator name");
+        return normalizedName;
     }
 
     /**

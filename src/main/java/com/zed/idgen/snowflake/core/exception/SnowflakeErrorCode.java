@@ -12,7 +12,6 @@ public enum SnowflakeErrorCode {
     GeneratorStopped(6, "generator stopped"),
     NoAvailableWorker(7, "no available worker"),
     GeneratorAlreadyRunning(8, "generator already running"),
-    GeneratorConflict(9, "generator conflict"),
     WorkerAlreadyRunning(10, "worker already running"),
     RuntimeManagerClosed(11, "runtime manager closed"),;
 

@@ -14,33 +14,38 @@ public interface GeneratorRuntimeManager {
     IdDomainInfo getDomainInfo();
 
     /**
-     * Returns registered worker bindings under one generator config.
+     * Resolves a generator name/ref to its stable generator id.
      */
-    List<GeneratorProperties> getGeneratorProperties(GeneratorParam generatorParam);
+    long resolveGeneratorId(String generatorName);
 
     /**
-     * Returns all running local instances under the requested generator config,
+     * Returns registered worker bindings under one generator id.
+     */
+    List<GeneratorProperties> getGeneratorProperties(long generatorId);
+
+    /**
+     * Returns all running local instances under the requested generator id,
      * keyed by worker id.
      */
-    Map<Long, IdGenerator> getGeneratorInstances(GeneratorParam generatorParam);
+    Map<Long, IdGenerator> getGeneratorInstances(long generatorId);
 
     /**
      * Returns the running instance for one exact worker id, or null if missing.
      */
-    IdGenerator getGeneratorInstance(GeneratorParam generatorParam, long workerId);
+    IdGenerator getGeneratorInstance(long generatorId, long workerId);
 
     /**
-     * Starts one available worker under the requested generator config.
+     * Starts one available worker under the requested generator id.
      */
-    IdGenerator startGeneratorInstance(GeneratorParam generatorParam);
+    IdGenerator startGeneratorInstance(long generatorId);
 
     /**
-     * Starts the exact worker under the requested generator config.
+     * Starts the exact worker under the requested generator id.
      */
-    IdGenerator startGeneratorInstance(GeneratorParam generatorParam, long workerId);
+    IdGenerator startGeneratorInstance(long generatorId, long workerId);
 
     /**
-     * Stops the exact worker under the requested generator config.
+     * Stops the exact worker under the requested generator id.
      */
-    boolean stopGeneratorInstance(GeneratorParam generatorParam, long workerId);
+    boolean stopGeneratorInstance(long generatorId, long workerId);
 }

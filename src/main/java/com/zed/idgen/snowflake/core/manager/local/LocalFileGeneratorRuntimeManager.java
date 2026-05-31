@@ -16,7 +16,7 @@ import java.time.Instant;
 /**
  * Single-machine runtime manager for local file registration.
  * <p>
- * The manager creates one running. Placeholder file under
+ * The manager creates one running.placeholder file under
  * ./uid-register/[baseDir] to make accidental multiprocess local usage
  * visible. It does not parse YAML directly; LocalFileRegistrationLoader owns
  * file layout and registration validation.

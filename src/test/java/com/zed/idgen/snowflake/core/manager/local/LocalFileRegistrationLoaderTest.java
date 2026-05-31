@@ -3,7 +3,6 @@ package com.zed.idgen.snowflake.core.manager.local;
 import com.zed.idgen.snowflake.core.constant.PrefixType;
 import com.zed.idgen.snowflake.core.constant.TimeUnit;
 import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
-import com.zed.idgen.snowflake.core.manager.GeneratorParam;
 import com.zed.idgen.snowflake.core.model.GeneratorInstanceProperties;
 import com.zed.idgen.snowflake.core.model.GeneratorProperties;
 import com.zed.idgen.snowflake.core.model.IdDomainInfo;
@@ -28,8 +27,8 @@ class LocalFileRegistrationLoaderTest {
         writeGenerator(root, "local-a", "11-7-order-id-east.yml", generatorYaml(""));
 
         LocalFileRegistrationLoader loader = new LocalFileRegistrationLoader(root, "local-a");
-        GeneratorProperties properties = loadFirst(loader,
-                new GeneratorParam(null, "order-id-east"));
+        long resolvedGeneratorId = loader.resolveGeneratorId(" order-id-east ");
+        GeneratorProperties properties = loadFirst(loader, resolvedGeneratorId);
 
         assertEquals(100L, properties.idDomainInfo().domainId());
         assertEquals("orders", properties.idDomainInfo().domainName());
@@ -41,15 +40,9 @@ class LocalFileRegistrationLoaderTest {
         assertEquals(100L, domainInfo.domainId());
         assertEquals("orders", domainInfo.domainName());
 
-        GeneratorProperties byId = loadFirst(loader,
-                new GeneratorParam(11L, null));
+        GeneratorProperties byId = loadFirst(loader, 11L);
         assertEquals("order-id-east", byId.generatorConfig().generatorName());
-
-        GeneratorProperties byIdAndName = loadFirst(loader, new GeneratorParam(11L, " order-id-east "));
-        assertEquals(11L, byIdAndName.generatorConfig().generatorId());
-
-        GeneratorProperties byIdWithBlankName = loadFirst(loader, new GeneratorParam(11L, " "));
-        assertEquals("order-id-east", byIdWithBlankName.generatorConfig().generatorName());
+        assertEquals(11L, resolvedGeneratorId);
 
         GeneratorInstanceProperties instanceProperties = GeneratorInstanceProperties.from(properties);
         assertEquals(11L, instanceProperties.generatorId());
@@ -75,7 +68,7 @@ class LocalFileRegistrationLoaderTest {
                 """);
 
         IdDomainInfo domainInfo = loader.getDomainInfo();
-        GeneratorProperties properties = loadFirst(loader, new GeneratorParam(null, "alpha"));
+        GeneratorProperties properties = loadFirst(loader, loader.resolveGeneratorId("alpha"));
 
         assertEquals(100L, domainInfo.domainId());
         assertEquals("orders", domainInfo.domainName());
@@ -101,7 +94,7 @@ class LocalFileRegistrationLoaderTest {
 
         InvalidConfigException ex = assertThrows(InvalidConfigException.class,
                 () -> new LocalFileRegistrationLoader(root, "duplicate-id")
-                        .loadGeneratorProperties(new GeneratorParam(11L, null)));
+                        .loadGeneratorProperties(11L));
 
         assertTrue(ex.getMessage().contains("duplicated generator id"));
     }
@@ -114,7 +107,7 @@ class LocalFileRegistrationLoaderTest {
 
         InvalidConfigException ex = assertThrows(InvalidConfigException.class,
                 () -> new LocalFileRegistrationLoader(root, "duplicate-worker")
-                        .loadGeneratorProperties(new GeneratorParam(null, "alpha")));
+                        .resolveGeneratorId("alpha"));
 
         assertTrue(ex.getMessage().contains("duplicated worker id"));
     }
@@ -127,7 +120,7 @@ class LocalFileRegistrationLoaderTest {
 
         InvalidConfigException ex = assertThrows(InvalidConfigException.class,
                 () -> new LocalFileRegistrationLoader(root, "duplicate-name")
-                        .loadGeneratorProperties(new GeneratorParam(null, "alpha")));
+                        .resolveGeneratorId("alpha"));
 
         assertTrue(ex.getMessage().contains("duplicated generator name"));
     }
@@ -142,7 +135,7 @@ class LocalFileRegistrationLoaderTest {
 
         InvalidConfigException ex = assertThrows(InvalidConfigException.class,
                 () -> new LocalFileRegistrationLoader(root, "filename-mismatch")
-                        .loadGeneratorProperties(new GeneratorParam(null, "alpha")));
+                        .loadGeneratorProperties(11L));
 
         assertTrue(ex.getMessage().contains("generator id mismatch"));
     }
@@ -157,7 +150,7 @@ class LocalFileRegistrationLoaderTest {
 
         InvalidConfigException ex = assertThrows(InvalidConfigException.class,
                 () -> new LocalFileRegistrationLoader(root, "domain-mismatch")
-                        .loadGeneratorProperties(new GeneratorParam(null, "alpha")));
+                        .loadGeneratorProperties(11L));
 
         assertTrue(ex.getMessage().contains("domain id mismatch"));
     }
@@ -169,8 +162,7 @@ class LocalFileRegistrationLoaderTest {
                 workerId: 7
                 """));
 
-        GeneratorProperties properties = loadFirst(new LocalFileRegistrationLoader(root, "single-worker"),
-                new GeneratorParam(null, "alpha"));
+        GeneratorProperties properties = loadFirst(new LocalFileRegistrationLoader(root, "single-worker"), 11L);
 
         assertEquals(7L, properties.workerId());
     }
@@ -184,7 +176,7 @@ class LocalFileRegistrationLoaderTest {
 
         InvalidConfigException ex = assertThrows(InvalidConfigException.class,
                 () -> new LocalFileRegistrationLoader(root, "worker-mismatch")
-                        .loadGeneratorProperties(new GeneratorParam(null, "alpha")));
+                        .loadGeneratorProperties(11L));
 
         assertTrue(ex.getMessage().contains("worker id mismatch"));
     }
@@ -199,24 +191,25 @@ class LocalFileRegistrationLoaderTest {
 
         assertThrows(InvalidConfigException.class,
                 () -> new LocalFileRegistrationLoader(root, "workers-array")
-                        .loadGeneratorProperties(new GeneratorParam(null, "alpha")));
+                        .loadGeneratorProperties(11L));
     }
 
     @Test
-    void rejectsEmptyGeneratorParam() {
-        assertThrows(InvalidConfigException.class, () -> new GeneratorParam(null, " "));
+    void rejectsEmptyGeneratorNameResolution() {
+        Path root = prepareBaseUnchecked("empty-name");
+        assertThrows(InvalidConfigException.class,
+                () -> new LocalFileRegistrationLoader(root, "empty-name").resolveGeneratorId(" "));
     }
 
     @Test
-    void rejectsGeneratorParamIdAndNameMismatch() throws IOException {
-        Path root = prepareBase("generator-param-mismatch");
-        writeGenerator(root, "generator-param-mismatch", "11-7-alpha.yml", generatorYaml(""));
+    void rejectsMissingGeneratorNameResolution() throws IOException {
+        Path root = prepareBase("missing-name");
+        writeGenerator(root, "missing-name", "11-7-alpha.yml", generatorYaml(""));
 
         InvalidConfigException ex = assertThrows(InvalidConfigException.class,
-                () -> new LocalFileRegistrationLoader(root, "generator-param-mismatch")
-                        .loadGeneratorProperties(new GeneratorParam(11L, "beta")));
+                () -> new LocalFileRegistrationLoader(root, "missing-name").resolveGeneratorId("beta"));
 
-        assertTrue(ex.getMessage().contains("generator name mismatch"));
+        assertTrue(ex.getMessage().contains("generator config not found by name"));
     }
 
     @Test
@@ -321,7 +314,15 @@ class LocalFileRegistrationLoaderTest {
                 """;
     }
 
-    private static GeneratorProperties loadFirst(LocalFileRegistrationLoader loader, GeneratorParam generatorParam) {
-        return loader.loadGeneratorProperties(generatorParam).getFirst();
+    private Path prepareBaseUnchecked(String baseDir) {
+        try {
+            return prepareBase(baseDir);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static GeneratorProperties loadFirst(LocalFileRegistrationLoader loader, long generatorId) {
+        return loader.loadGeneratorProperties(generatorId).getFirst();
     }
 }

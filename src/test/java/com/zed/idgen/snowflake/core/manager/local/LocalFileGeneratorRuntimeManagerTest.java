@@ -8,7 +8,6 @@ import com.zed.idgen.snowflake.core.constant.TimeUnit;
 import com.zed.idgen.snowflake.core.exception.IdGenerationException;
 import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
 import com.zed.idgen.snowflake.core.exception.SnowflakeErrorCode;
-import com.zed.idgen.snowflake.core.manager.GeneratorParam;
 import com.zed.idgen.snowflake.core.manager.RegistrationLoader;
 import com.zed.idgen.snowflake.core.model.GeneratorConfig;
 import com.zed.idgen.snowflake.core.model.GeneratorPolicy;
@@ -55,7 +54,7 @@ class LocalFileGeneratorRuntimeManagerTest {
         writeGenerator(root, "runtime-properties", "11-7-order-id.yml", generatorYaml());
 
         try (LocalFileGeneratorRuntimeManager manager = new LocalFileGeneratorRuntimeManager(root, "runtime-properties")) {
-            GeneratorProperties properties = manager.getGeneratorProperties(new GeneratorParam(null, "order-id")).getFirst();
+            GeneratorProperties properties = manager.getGeneratorProperties(manager.resolveGeneratorId("order-id")).getFirst();
 
             assertEquals(11L, properties.generatorConfig().generatorId());
             assertEquals("order-id", properties.generatorConfig().generatorName());
@@ -69,7 +68,7 @@ class LocalFileGeneratorRuntimeManagerTest {
         writeGenerator(root, "runtime-start", "11-7-order-id.yml", generatorYaml());
 
         try (LocalFileGeneratorRuntimeManager manager = new LocalFileGeneratorRuntimeManager(root, "runtime-start")) {
-            IdGenerator generator = manager.startGeneratorInstance(new GeneratorParam(11L, null));
+            IdGenerator generator = manager.startGeneratorInstance(11L);
 
             assertNotNull(generator);
             assertTrue(generator.getUid() > 0);
@@ -77,17 +76,15 @@ class LocalFileGeneratorRuntimeManagerTest {
     }
 
     @Test
-    void getsExistingGeneratorByIdAndName() throws IOException {
+    void getsExistingGeneratorById() throws IOException {
         Path root = prepareBase("runtime-get");
         writeGenerator(root, "runtime-get", "11-7-order-id.yml", generatorYaml());
 
         try (LocalFileGeneratorRuntimeManager manager = new LocalFileGeneratorRuntimeManager(root, "runtime-get")) {
-            IdGenerator generator = manager.startGeneratorInstance(new GeneratorParam(11L, null));
+            IdGenerator generator = manager.startGeneratorInstance(11L);
 
-            assertSame(generator, manager.getGeneratorInstance(new GeneratorParam(11L, null), 7L));
-            assertSame(generator, manager.getGeneratorInstance(new GeneratorParam(null, "order-id"), 7L));
-            assertSame(generator, manager.getGeneratorInstance(new GeneratorParam(11L, "order-id"), 7L));
-            assertNull(manager.getGeneratorInstance(new GeneratorParam(11L, "other"), 7L));
+            assertSame(generator, manager.getGeneratorInstance(11L, 7L));
+            assertNull(manager.getGeneratorInstance(99L, 7L));
         }
     }
 
@@ -97,10 +94,10 @@ class LocalFileGeneratorRuntimeManagerTest {
         writeGenerator(root, "runtime-duplicate-start", "11-7-order-id.yml", generatorYaml());
 
         try (LocalFileGeneratorRuntimeManager manager = new LocalFileGeneratorRuntimeManager(root, "runtime-duplicate-start")) {
-            manager.startGeneratorInstance(new GeneratorParam(11L, null));
+            manager.startGeneratorInstance(11L);
 
             IdGenerationException ex = assertThrows(IdGenerationException.class,
-                    () -> manager.startGeneratorInstance(new GeneratorParam(null, "order-id")));
+                    () -> manager.startGeneratorInstance(manager.resolveGeneratorId("order-id")));
 
             assertEquals(SnowflakeErrorCode.NoAvailableWorker, ex.getErrorCode());
             assertTrue(ex.getMessage().contains("no available worker"));
@@ -116,17 +113,17 @@ class LocalFileGeneratorRuntimeManagerTest {
         );
 
         try (LocalFileGeneratorRuntimeManager manager = new LocalFileGeneratorRuntimeManager(loader, basePath)) {
-            IdGenerator worker7 = manager.startGeneratorInstance(new GeneratorParam(11L, null), 7L);
-            IdGenerator worker8 = manager.startGeneratorInstance(new GeneratorParam(null, "order-id"), 8L);
+            IdGenerator worker7 = manager.startGeneratorInstance(11L, 7L);
+            IdGenerator worker8 = manager.startGeneratorInstance(manager.resolveGeneratorId("order-id"), 8L);
 
-            Map<Long, IdGenerator> generators = manager.getGeneratorInstances(new GeneratorParam(11L, "order-id"));
+            Map<Long, IdGenerator> generators = manager.getGeneratorInstances(11L);
             assertEquals(2, generators.size());
             assertSame(worker7, generators.get(7L));
             assertSame(worker8, generators.get(8L));
 
-            assertTrue(manager.stopGeneratorInstance(new GeneratorParam(11L, null), 7L));
-            assertNull(manager.getGeneratorInstance(new GeneratorParam(11L, null), 7L));
-            assertSame(worker8, manager.getGeneratorInstance(new GeneratorParam(null, "order-id"), 8L));
+            assertTrue(manager.stopGeneratorInstance(11L, 7L));
+            assertNull(manager.getGeneratorInstance(11L, 7L));
+            assertSame(worker8, manager.getGeneratorInstance(11L, 8L));
         }
     }
 
@@ -139,10 +136,10 @@ class LocalFileGeneratorRuntimeManagerTest {
         );
 
         try (LocalFileGeneratorRuntimeManager manager = new LocalFileGeneratorRuntimeManager(loader, basePath)) {
-            manager.startGeneratorInstance(new GeneratorParam(11L, null));
+            manager.startGeneratorInstance(11L);
 
             IdGenerationException ex = assertThrows(IdGenerationException.class,
-                    () -> manager.startGeneratorInstance(new GeneratorParam(12L, null)));
+                    () -> manager.startGeneratorInstance(12L));
 
             assertEquals(SnowflakeErrorCode.NoAvailableWorker, ex.getErrorCode());
             assertTrue(ex.getMessage().contains("no available worker"));
@@ -155,11 +152,11 @@ class LocalFileGeneratorRuntimeManagerTest {
         writeGenerator(root, "runtime-stop", "11-7-order-id.yml", generatorYaml());
 
         try (LocalFileGeneratorRuntimeManager manager = new LocalFileGeneratorRuntimeManager(root, "runtime-stop")) {
-            manager.startGeneratorInstance(new GeneratorParam(11L, null));
+            manager.startGeneratorInstance(11L);
 
-            assertTrue(manager.stopGeneratorInstance(new GeneratorParam(null, "order-id"), 7L));
-            assertNull(manager.getGeneratorInstance(new GeneratorParam(11L, null), 7L));
-            assertFalse(manager.stopGeneratorInstance(new GeneratorParam(99L, null), 7L));
+            assertTrue(manager.stopGeneratorInstance(manager.resolveGeneratorId("order-id"), 7L));
+            assertNull(manager.getGeneratorInstance(11L, 7L));
+            assertFalse(manager.stopGeneratorInstance(99L, 7L));
         }
     }
 
@@ -169,8 +166,8 @@ class LocalFileGeneratorRuntimeManagerTest {
         writeGenerator(root, "runtime-stopped-generator", "11-7-order-id.yml", generatorYaml());
 
         try (LocalFileGeneratorRuntimeManager manager = new LocalFileGeneratorRuntimeManager(root, "runtime-stopped-generator")) {
-            IdGenerator generator = manager.startGeneratorInstance(new GeneratorParam(11L, null));
-            manager.stopGeneratorInstance(new GeneratorParam(11L, null), 7L);
+            IdGenerator generator = manager.startGeneratorInstance(11L);
+            manager.stopGeneratorInstance(11L, 7L);
 
             assertThrows(IdGenerationException.class, generator::getUid);
         }
@@ -287,24 +284,21 @@ class LocalFileGeneratorRuntimeManagerTest {
         }
 
         @Override
-        public List<GeneratorProperties> loadGeneratorProperties(GeneratorParam generatorParam) {
-            if (generatorParam.generatorId() != null) {
-                List<GeneratorProperties> properties = byId.get(generatorParam.generatorId());
-                if (properties == null) {
-                    throw new InvalidConfigException("generator not found: " + generatorParam.generatorId());
-                }
-                if (generatorParam.generatorName() != null
-                        && !generatorParam.generatorName().equals(properties.getFirst().generatorConfig().generatorName())) {
-                    throw new InvalidConfigException("generator name mismatch");
-                }
-                return properties;
-            }
-
-            Long generatorId = byName.get(generatorParam.generatorName());
+        public long resolveGeneratorId(String generatorName) {
+            Long generatorId = byName.get(generatorName);
             if (generatorId == null) {
-                throw new InvalidConfigException("generator not found: " + generatorParam.generatorName());
+                throw new InvalidConfigException("generator not found: " + generatorName);
             }
-            return byId.get(generatorId);
+            return generatorId;
+        }
+
+        @Override
+        public List<GeneratorProperties> loadGeneratorProperties(long generatorId) {
+            List<GeneratorProperties> properties = byId.get(generatorId);
+            if (properties == null) {
+                throw new InvalidConfigException("generator not found: " + generatorId);
+            }
+            return properties;
         }
     }
 }

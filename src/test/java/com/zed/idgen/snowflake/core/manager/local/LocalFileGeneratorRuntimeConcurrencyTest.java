@@ -2,7 +2,6 @@ package com.zed.idgen.snowflake.core.manager.local;
 
 import com.zed.idgen.snowflake.core.IdGenerator;
 import com.zed.idgen.snowflake.core.component.IdCodec;
-import com.zed.idgen.snowflake.core.manager.GeneratorParam;
 import com.zed.idgen.snowflake.core.model.GeneratorProperties;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -75,14 +74,14 @@ class LocalFileGeneratorRuntimeConcurrencyTest {
             long generatorId = i + 1L;
             long workerId = i;
             String generatorName = generatorName(i);
-            GeneratorParam param = new GeneratorParam(generatorId, generatorName);
 
-            GeneratorProperties properties = manager.getGeneratorProperties(param).getFirst();
+            assertEquals(generatorId, manager.resolveGeneratorId(generatorName));
+            GeneratorProperties properties = manager.getGeneratorProperties(generatorId).getFirst();
             assertEquals(generatorId, properties.generatorConfig().generatorId());
             assertEquals(generatorName, properties.generatorConfig().generatorName());
             assertEquals(workerId, properties.workerId());
 
-            IdGenerator generator = manager.startGeneratorInstance(param);
+            IdGenerator generator = manager.startGeneratorInstance(generatorId);
             assertNotNull(generator);
             generators.add(new RunningGenerator(generatorId, generatorName, workerId, generator));
         }
@@ -139,9 +138,7 @@ class LocalFileGeneratorRuntimeConcurrencyTest {
         ready.countDown();
         assertTrue(start.await(5, TimeUnit.SECONDS), "start gate was not released");
 
-        IdGenerator indexedGenerator = manager.getGeneratorInstance(
-                new GeneratorParam(runningGenerator.generatorId(), runningGenerator.generatorName()),
-                runningGenerator.workerId());
+        IdGenerator indexedGenerator = manager.getGeneratorInstance(runningGenerator.generatorId(), runningGenerator.workerId());
         assertSame(runningGenerator.generator(), indexedGenerator);
 
         return switch (scenario.mode()) {

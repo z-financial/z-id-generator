@@ -14,11 +14,16 @@ public interface RegistrationLoader {
     IdDomainInfo getDomainInfo();
 
     /**
-     * Loads registered worker bindings under the requested generator config.
+     * Resolves a human-friendly generator name/ref to its stable generator id.
+     */
+    long resolveGeneratorId(String generatorName);
+
+    /**
+     * Loads registered worker bindings under the requested generator id.
      * This method only loads registration/config data; it must not acquire
      * runtime leases or decide which worker this JVM should run.
      * Implementations may reload generator config dynamically, but returned
      * properties must still use the stable domain snapshot from getDomainInfo().
      */
-    List<GeneratorProperties> loadGeneratorProperties(GeneratorParam generatorParam);
+    List<GeneratorProperties> loadGeneratorProperties(long generatorId);
 }

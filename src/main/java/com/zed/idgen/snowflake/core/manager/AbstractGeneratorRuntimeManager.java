@@ -12,10 +12,8 @@ import com.zed.idgen.snowflake.core.model.GeneratorProperties;
 import com.zed.idgen.snowflake.core.model.IdDomainInfo;
 
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -29,15 +27,14 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
     /*
      * These maps form one logical runtime index. A generator config can have
      * many running worker instances, so byGeneratorId owns entries by
-     * generatorId -> workerId. The other maps are secondary indexes for name
-     * lookup and domain-level worker uniqueness. A single ReadWriteLock keeps
-     * cross-map reads and writes consistent without requiring ConcurrentHashMap.
+     * generatorId -> workerId. workerIdToGeneratorId is a secondary index for
+     * domain-level worker uniqueness. A single ReadWriteLock keeps cross-map
+     * reads and writes consistent without requiring ConcurrentHashMap.
      */
     private final ReentrantReadWriteLock runtimeLock = new ReentrantReadWriteLock();
     private final Lock readLock = runtimeLock.readLock();
     private final Lock writeLock = runtimeLock.writeLock();
     private final Map<Long, Map<Long, RuntimeGeneratorEntry>> byGeneratorId = new HashMap<>();
-    private final Map<String, Long> generatorNameToId = new HashMap<>();
     private final Map<Long, Long> workerIdToGeneratorId = new HashMap<>();
     private boolean closed;
 
@@ -60,28 +57,40 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
     }
 
     @Override
-    public List<GeneratorProperties> getGeneratorProperties(GeneratorParam generatorParam) {
-        requireGeneratorParam(generatorParam);
+    public long resolveGeneratorId(String generatorName) {
+        requireGeneratorName(generatorName);
         readLock.lock();
         try {
             ensureOpen();
-            return registrationLoader.loadGeneratorProperties(generatorParam);
+            return registrationLoader.resolveGeneratorId(generatorName);
         } finally {
             readLock.unlock();
         }
     }
 
     @Override
-    public Map<Long, IdGenerator> getGeneratorInstances(GeneratorParam generatorParam) {
-        requireGeneratorParam(generatorParam);
+    public List<GeneratorProperties> getGeneratorProperties(long generatorId) {
+        requireGeneratorId(generatorId);
         readLock.lock();
         try {
             ensureOpen();
-            Map<Long, RuntimeGeneratorEntry> entries = findRuntimeEntries(generatorParam);
+            return registrationLoader.loadGeneratorProperties(generatorId);
+        } finally {
+            readLock.unlock();
+        }
+    }
+
+    @Override
+    public Map<Long, IdGenerator> getGeneratorInstances(long generatorId) {
+        requireGeneratorId(generatorId);
+        readLock.lock();
+        try {
+            ensureOpen();
+            Map<Long, RuntimeGeneratorEntry> entries = findRuntimeEntries(generatorId);
             if (entries.isEmpty()) {
                 return Map.of();
             }
-            Map<Long, IdGenerator> generators = new LinkedHashMap<>();
+            Map<Long, IdGenerator> generators = new HashMap<>();
             for (RuntimeGeneratorEntry entry : entries.values()) {
                 generators.put(entry.workerId(), entry.generator());
             }
@@ -92,13 +101,13 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
     }
 
     @Override
-    public IdGenerator getGeneratorInstance(GeneratorParam generatorParam, long workerId) {
-        requireGeneratorParam(generatorParam);
+    public IdGenerator getGeneratorInstance(long generatorId, long workerId) {
+        requireGeneratorId(generatorId);
         requireWorkerId(workerId);
         readLock.lock();
         try {
             ensureOpen();
-            RuntimeGeneratorEntry entry = findRuntimeEntry(generatorParam, workerId);
+            RuntimeGeneratorEntry entry = findRuntimeEntry(generatorId, workerId);
             return entry == null ? null : entry.generator();
         } finally {
             readLock.unlock();
@@ -106,33 +115,33 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
     }
 
     @Override
-    public IdGenerator startGeneratorInstance(GeneratorParam generatorParam) {
-        requireGeneratorParam(generatorParam);
+    public IdGenerator startGeneratorInstance(long generatorId) {
+        requireGeneratorId(generatorId);
         writeLock.lock();
         try {
             ensureOpen();
-            List<GeneratorProperties> candidates = loadCandidateProperties(generatorParam);
+            List<GeneratorProperties> candidates = loadCandidateProperties(generatorId);
             for (GeneratorProperties properties : candidates) {
                 if (workerIdToGeneratorId.containsKey(properties.workerId())) {
                     continue;
                 }
                 return createAndRegister(properties).generator();
             }
-            throw IdGenerationException.noAvailableWorker(generatorParam);
+            throw IdGenerationException.noAvailableWorker(generatorId);
         } finally {
             writeLock.unlock();
         }
     }
 
     @Override
-    public IdGenerator startGeneratorInstance(GeneratorParam generatorParam, long workerId) {
-        requireGeneratorParam(generatorParam);
+    public IdGenerator startGeneratorInstance(long generatorId, long workerId) {
+        requireGeneratorId(generatorId);
         requireWorkerId(workerId);
         writeLock.lock();
         try {
             ensureOpen();
-            assertNoLocalWorkerConflict(generatorParam, workerId);
-            GeneratorProperties properties = findCandidateByWorkerId(loadCandidateProperties(generatorParam), workerId);
+            assertWorkerCanStart(generatorId, workerId);
+            GeneratorProperties properties = findCandidateByWorkerId(loadCandidateProperties(generatorId), workerId);
             if (properties == null) {
                 throw new InvalidConfigException("worker id is not registered under generator: " + workerId);
             }
@@ -143,13 +152,13 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
     }
 
     @Override
-    public boolean stopGeneratorInstance(GeneratorParam generatorParam, long workerId) {
-        requireGeneratorParam(generatorParam);
+    public boolean stopGeneratorInstance(long generatorId, long workerId) {
+        requireGeneratorId(generatorId);
         requireWorkerId(workerId);
         writeLock.lock();
         try {
             ensureOpen();
-            RuntimeGeneratorEntry entry = findRuntimeEntry(generatorParam, workerId);
+            RuntimeGeneratorEntry entry = findRuntimeEntry(generatorId, workerId);
             if (entry == null) {
                 return false;
             }
@@ -174,7 +183,6 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
                 }
             }
             byGeneratorId.clear();
-            generatorNameToId.clear();
             workerIdToGeneratorId.clear();
             onShutdown();
             closed = true;
@@ -199,7 +207,7 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
         GeneratorInstanceProperties instanceProperties = GeneratorInstanceProperties.from(properties);
         GeneratorConfig config = properties.generatorConfig();
         long workerId = instanceProperties.workerId();
-        assertNoRunningConflict(config.generatorId(), config.generatorName(), workerId);
+        assertWorkerCanStart(config.generatorId(), workerId);
 
         IdGeneratorInstance generator = IdGeneratorFactory.create(instanceProperties);
         RuntimeGeneratorEntry entry = new RuntimeGeneratorEntry(
@@ -220,10 +228,9 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
     }
 
     private void publish(RuntimeGeneratorEntry entry) {
-        assertNoRunningConflict(entry.generatorId(), entry.generatorName(), entry.workerId());
+        assertWorkerCanStart(entry.generatorId(), entry.workerId());
         byGeneratorId.computeIfAbsent(entry.generatorId(), ignored -> new HashMap<>())
                 .put(entry.workerId(), entry);
-        generatorNameToId.putIfAbsent(entry.generatorName(), entry.generatorId());
         workerIdToGeneratorId.put(entry.workerId(), entry.generatorId());
     }
 
@@ -233,85 +240,43 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
             entries.remove(entry.workerId());
             if (entries.isEmpty()) {
                 byGeneratorId.remove(entry.generatorId());
-                generatorNameToId.remove(entry.generatorName(), entry.generatorId());
             }
         }
         workerIdToGeneratorId.remove(entry.workerId(), entry.generatorId());
     }
 
     /**
-     * Returns the running entries matching a generator id/name. Callers must
-     * hold the runtime lock because the returned map is the live inner index.
+     * Returns running entries for one canonical generator id. Missing runtime
+     * state is a normal query miss and returns an empty map.
      */
-    private Map<Long, RuntimeGeneratorEntry> findRuntimeEntries(GeneratorParam generatorParam) {
-        if (generatorParam == null) {
-            return Map.of();
-        }
-        Long generatorId = generatorParam.generatorId();
-        String generatorName = generatorParam.generatorName();
-
-        if (generatorId != null) {
-            Map<Long, RuntimeGeneratorEntry> entries = byGeneratorId.get(generatorId);
-            if (entries == null) {
-                return Map.of();
-            }
-            if (generatorName != null && !Objects.equals(generatorNameToId.get(generatorName), generatorId)) {
-                return Map.of();
-            }
-            return entries;
-        }
-
-        Long indexedGeneratorId = generatorNameToId.get(generatorName);
-        if (indexedGeneratorId == null) {
-            return Map.of();
-        }
-        Map<Long, RuntimeGeneratorEntry> entries = byGeneratorId.get(indexedGeneratorId);
+    private Map<Long, RuntimeGeneratorEntry> findRuntimeEntries(long generatorId) {
+        Map<Long, RuntimeGeneratorEntry> entries = byGeneratorId.get(generatorId);
         return entries == null ? Map.of() : entries;
     }
 
-    private RuntimeGeneratorEntry findRuntimeEntry(GeneratorParam generatorParam, long workerId) {
-        return findRuntimeEntries(generatorParam).get(workerId);
-    }
-
-    private void assertNoRunningConflict(long generatorId, String generatorName, long workerId) {
-        Map<Long, RuntimeGeneratorEntry> entries = byGeneratorId.get(generatorId);
-        if (entries != null) {
-            if (entries.containsKey(workerId)) {
-                throw IdGenerationException.generatorWorkerAlreadyRunning(generatorId, workerId);
-            }
-            RuntimeGeneratorEntry sample = entries.values().iterator().next();
-            if (!generatorName.equals(sample.generatorName())) {
-                throw IdGenerationException.generatorIdConflict(generatorId);
-            }
-        }
-        Long existingGeneratorId = generatorNameToId.get(generatorName);
-        if (existingGeneratorId != null && !existingGeneratorId.equals(generatorId)) {
-            throw IdGenerationException.generatorNameConflict(generatorName);
-        }
-        if (workerIdToGeneratorId.containsKey(workerId)) {
-            throw IdGenerationException.workerAlreadyRunning(workerId);
-        }
+    private RuntimeGeneratorEntry findRuntimeEntry(long generatorId, long workerId) {
+        return findRuntimeEntries(generatorId).get(workerId);
     }
 
     /**
-     * Explicit worker start can fail fast from local runtime indexes before
-     * loading registration data. It still reloads config afterward to verify
-     * that the requested worker belongs to the requested generator config.
+     * Checks both runtime indexes before starting a worker. The exact
+     * generator/worker duplicate gets the more specific error; a worker already
+     * owned by another generator is reported as a domain-level worker conflict.
      */
-    private void assertNoLocalWorkerConflict(GeneratorParam generatorParam, long workerId) {
-        RuntimeGeneratorEntry entry = findRuntimeEntry(generatorParam, workerId);
+    private void assertWorkerCanStart(long generatorId, long workerId) {
+        RuntimeGeneratorEntry entry = findRuntimeEntry(generatorId, workerId);
         if (entry != null) {
-            throw IdGenerationException.generatorWorkerAlreadyRunning(entry.generatorId(), workerId);
+            throw IdGenerationException.generatorWorkerAlreadyRunning(generatorId, workerId);
         }
         if (workerIdToGeneratorId.containsKey(workerId)) {
             throw IdGenerationException.workerAlreadyRunning(workerId);
         }
     }
 
-    private List<GeneratorProperties> loadCandidateProperties(GeneratorParam generatorParam) {
-        List<GeneratorProperties> candidates = registrationLoader.loadGeneratorProperties(generatorParam);
+    private List<GeneratorProperties> loadCandidateProperties(long generatorId) {
+        List<GeneratorProperties> candidates = registrationLoader.loadGeneratorProperties(generatorId);
         if (candidates == null || candidates.isEmpty()) {
-            throw new InvalidConfigException("generator properties must not be empty: " + generatorParam);
+            throw new InvalidConfigException("generator properties must not be empty, generator id: " + generatorId);
         }
         return candidates;
     }
@@ -331,9 +296,15 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
         }
     }
 
-    private static void requireGeneratorParam(GeneratorParam generatorParam) {
-        if (generatorParam == null) {
-            throw new InvalidConfigException("generator param must not be null");
+    private static void requireGeneratorId(long generatorId) {
+        if (generatorId < 0) {
+            throw new InvalidConfigException("generator id must not be negative");
+        }
+    }
+
+    private static void requireGeneratorName(String generatorName) {
+        if (generatorName == null || generatorName.isBlank()) {
+            throw new InvalidConfigException("generator name must not be blank");
         }
     }
 

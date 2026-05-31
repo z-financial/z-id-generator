@@ -5,7 +5,6 @@ import com.zed.idgen.snowflake.core.constant.IdRunOutPolicy;
 import com.zed.idgen.snowflake.core.constant.PrefixType;
 import com.zed.idgen.snowflake.core.constant.TimeUnit;
 import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
-import com.zed.idgen.snowflake.core.manager.GeneratorParam;
 import com.zed.idgen.snowflake.core.manager.config.ConfigRuntimeConfig.GenerationPolicyConfig;
 import com.zed.idgen.snowflake.core.manager.config.ConfigRuntimeConfig.GeneratorConfig;
 import com.zed.idgen.snowflake.core.manager.config.ConfigRuntimeConfig.IdDomainConfig;
@@ -36,16 +35,16 @@ class ConfigRegistrationLoaderTest {
         assertEquals(PrefixType.POSITIVE_SIGNAL, domainInfo.prefixType());
         assertEquals(TimeUnit.MILLISECOND, domainInfo.timeUnit());
 
-        GeneratorProperties order = loader.loadGeneratorProperties(new GeneratorParam(11L, null)).getFirst();
+        GeneratorProperties order = loader.loadGeneratorProperties(11L).getFirst();
         assertEquals(0L, order.workerId());
         assertEquals(1, order.generatorConfig().generationPolicy().maximumRetry());
         assertEquals(IdRunOutPolicy.NONE, order.generatorConfig().generationPolicy().idRunOutPolicy());
         assertEquals(ClockRollbackPolicy.NONE, order.generatorConfig().generationPolicy().clockRollbackPolicy());
 
-        GeneratorProperties payment = loader.loadGeneratorProperties(new GeneratorParam(null, "payment")).getFirst();
+        GeneratorProperties payment = loader.loadGeneratorProperties(loader.resolveGeneratorId("payment")).getFirst();
         assertEquals(2L, payment.workerId());
 
-        GeneratorProperties invoice = loader.loadGeneratorProperties(new GeneratorParam(13L, "invoice")).getFirst();
+        GeneratorProperties invoice = loader.loadGeneratorProperties(13L).getFirst();
         assertEquals(1L, invoice.workerId());
         assertEquals(0, invoice.generatorConfig().generationPolicy().maximumRetry());
     }
@@ -61,7 +60,7 @@ class ConfigRegistrationLoaderTest {
                 )
         ));
 
-        List<GeneratorProperties> properties = loader.loadGeneratorProperties(new GeneratorParam(11L, "order"));
+        List<GeneratorProperties> properties = loader.loadGeneratorProperties(11L);
 
         assertEquals(List.of(1L, 2L, 3L), properties.stream().map(GeneratorProperties::workerId).toList());
     }
@@ -149,16 +148,17 @@ class ConfigRegistrationLoaderTest {
     }
 
     @Test
-    void rejectsGeneratorParamIdAndNameMismatch() {
+    void resolvesGeneratorNameToId() {
         ConfigRegistrationLoader loader = new ConfigRegistrationLoader(config(
                 domain(null, null),
                 List.of(generator(11L, "order", null, null))
         ));
 
-        InvalidConfigException ex = assertThrows(InvalidConfigException.class,
-                () -> loader.loadGeneratorProperties(new GeneratorParam(11L, "payment")));
+        assertEquals(11L, loader.resolveGeneratorId(" order "));
 
-        assertTrue(ex.getMessage().contains("generator name mismatch"));
+        InvalidConfigException ex = assertThrows(InvalidConfigException.class,
+                () -> loader.resolveGeneratorId("payment"));
+        assertTrue(ex.getMessage().contains("generator config not found by name"));
     }
 
     private static ConfigRuntimeConfig config(IdDomainConfig domainInfo, List<GeneratorConfig> generators) {
