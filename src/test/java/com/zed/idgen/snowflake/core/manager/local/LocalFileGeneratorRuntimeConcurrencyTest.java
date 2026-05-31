@@ -77,10 +77,10 @@ class LocalFileGeneratorRuntimeConcurrencyTest {
             String generatorName = generatorName(i);
             GeneratorParam param = new GeneratorParam(generatorId, generatorName);
 
-            GeneratorProperties properties = manager.getGeneratorProperties(param);
+            GeneratorProperties properties = manager.getGeneratorProperties(param).getFirst();
             assertEquals(generatorId, properties.generatorConfig().generatorId());
             assertEquals(generatorName, properties.generatorConfig().generatorName());
-            assertEquals(List.of(workerId), properties.workerIds());
+            assertEquals(workerId, properties.workerId());
 
             IdGenerator generator = manager.startGeneratorInstance(param);
             assertNotNull(generator);
@@ -140,7 +140,8 @@ class LocalFileGeneratorRuntimeConcurrencyTest {
         assertTrue(start.await(5, TimeUnit.SECONDS), "start gate was not released");
 
         IdGenerator indexedGenerator = manager.getGeneratorInstance(
-                new GeneratorParam(runningGenerator.generatorId(), runningGenerator.generatorName()));
+                new GeneratorParam(runningGenerator.generatorId(), runningGenerator.generatorName()),
+                runningGenerator.workerId());
         assertSame(runningGenerator.generator(), indexedGenerator);
 
         return switch (scenario.mode()) {

@@ -15,6 +15,7 @@ import com.zed.idgen.snowflake.core.model.GeneratorPolicy;
 import com.zed.idgen.snowflake.core.model.GeneratorProperties;
 import com.zed.idgen.snowflake.core.model.IdDomainInfo;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -24,13 +25,13 @@ import java.util.Set;
 /**
  * Registration loader for an immutable in-memory config object. All defaults,
  * uniqueness checks, and worker-id allocation are resolved once during
- * construction so runtime lookups are simple map reads.
+ * construction, so runtime lookups are simple map reads.
  */
 public final class ConfigRegistrationLoader implements RegistrationLoader {
     private static final int DEFAULT_MAXIMUM_RETRY = 1;
 
     private final IdDomainInfo domainInfo;
-    private final Map<Long, GeneratorProperties> byGeneratorId;
+    private final Map<Long, List<GeneratorProperties>> byGeneratorId;
     private final Map<String, Long> generatorNameToId;
 
     ConfigRegistrationLoader(ConfigRuntimeConfig config) {
@@ -38,10 +39,10 @@ public final class ConfigRegistrationLoader implements RegistrationLoader {
             throw new InvalidConfigException("config runtime config must not be null");
         }
         this.domainInfo = resolveDomainInfo(config.idDomainInfo());
-        Map<Long, GeneratorProperties> byId = new HashMap<>();
+        Map<Long, List<GeneratorProperties>> byId = new HashMap<>();
         Map<String, Long> byName = new HashMap<>();
-        loadGeneratorProperties(config.generators(), byId, byName);
-        this.byGeneratorId = Map.copyOf(byId);
+        loadConfiguredGeneratorProperties(config.generators(), byId, byName);
+        this.byGeneratorId = freezeByGeneratorId(byId);
         this.generatorNameToId = Map.copyOf(byName);
     }
 
@@ -51,7 +52,7 @@ public final class ConfigRegistrationLoader implements RegistrationLoader {
     }
 
     @Override
-    public GeneratorProperties loadGenerator(GeneratorParam generatorParam) {
+    public List<GeneratorProperties> loadGeneratorProperties(GeneratorParam generatorParam) {
         if (generatorParam == null) {
             throw new InvalidConfigException("generator param must not be null");
         }
@@ -59,13 +60,14 @@ public final class ConfigRegistrationLoader implements RegistrationLoader {
         Long generatorId = generatorParam.generatorId();
         String generatorName = generatorParam.generatorName();
         if (generatorId != null) {
-            GeneratorProperties properties = byGeneratorId.get(generatorId);
-            if (properties == null) {
+            List<GeneratorProperties> properties = byGeneratorId.get(generatorId);
+            if (properties == null || properties.isEmpty()) {
                 throw new InvalidConfigException("generator config not found by id: " + generatorId);
             }
-            if (generatorName != null && !generatorName.equals(properties.generatorConfig().generatorName())) {
+            String configName = properties.getFirst().generatorConfig().generatorName();
+            if (generatorName != null && !generatorName.equals(configName)) {
                 throw new InvalidConfigException("generator name mismatch, requested: " + generatorName
-                        + ", config: " + properties.generatorConfig().generatorName());
+                        + ", config: " + configName);
             }
             return properties;
         }
@@ -94,9 +96,9 @@ public final class ConfigRegistrationLoader implements RegistrationLoader {
         );
     }
 
-    private void loadGeneratorProperties(List<ConfigRuntimeConfig.GeneratorConfig> configs,
-                                         Map<Long, GeneratorProperties> byId,
-                                         Map<String, Long> byName) {
+    private void loadConfiguredGeneratorProperties(List<ConfigRuntimeConfig.GeneratorConfig> configs,
+                                                   Map<Long, List<GeneratorProperties>> byId,
+                                                   Map<String, Long> byName) {
         if (configs == null || configs.isEmpty()) {
             throw new InvalidConfigException("generator config list must not be empty");
         }
@@ -113,6 +115,7 @@ public final class ConfigRegistrationLoader implements RegistrationLoader {
 
             long generatorId = requireGeneratorId(config.generatorId());
             String generatorName = requireText(config.generatorName(), "generator name");
+            GeneratorPolicy generationPolicy = resolveGenerationPolicy(config.generationPolicy());
             long workerId;
             if (config.workerId() == null) {
                 workerId = allocateWorkerId(usedWorkerIds, nextWorkerId, maxWorker);
@@ -124,12 +127,11 @@ public final class ConfigRegistrationLoader implements RegistrationLoader {
 
             GeneratorProperties properties = new GeneratorProperties(
                     domainInfo,
-                    new GeneratorConfig(generatorId, generatorName, resolveGenerationPolicy(config.generationPolicy())),
-                    List.of(workerId),
+                    new GeneratorConfig(generatorId, generatorName, generationPolicy),
+                    workerId,
                     null
             );
-            putUniqueById(byId, generatorId, properties);
-            putUniqueByName(byName, generatorName, generatorId);
+            addGeneratorProperty(byId, byName, generatorId, generatorName, generationPolicy, properties);
         }
     }
 
@@ -196,21 +198,36 @@ public final class ConfigRegistrationLoader implements RegistrationLoader {
         return value.trim();
     }
 
-    private static void putUniqueById(Map<Long, GeneratorProperties> byId,
-                                      long generatorId,
-                                      GeneratorProperties properties) {
-        GeneratorProperties existing = byId.putIfAbsent(generatorId, properties);
-        if (existing != null) {
-            throw new InvalidConfigException("duplicated generator id: " + generatorId);
+    private static void addGeneratorProperty(Map<Long, List<GeneratorProperties>> byId,
+                                             Map<String, Long> byName,
+                                             long generatorId,
+                                             String generatorName,
+                                             GeneratorPolicy generationPolicy,
+                                             GeneratorProperties properties) {
+        List<GeneratorProperties> existingProperties = byId.get(generatorId);
+        if (existingProperties != null && !existingProperties.isEmpty()) {
+            GeneratorConfig existingConfig = existingProperties.getFirst().generatorConfig();
+            if (!generatorName.equals(existingConfig.generatorName())) {
+                throw new InvalidConfigException("same generator id has different names: " + generatorId);
+            }
+            if (!generationPolicy.equals(existingConfig.generationPolicy())) {
+                throw new InvalidConfigException("same generator id has different generation policies: " + generatorId);
+            }
         }
-    }
 
-    private static void putUniqueByName(Map<String, Long> byName,
-                                        String generatorName,
-                                        long generatorId) {
         Long existing = byName.putIfAbsent(generatorName, generatorId);
-        if (existing != null) {
+        if (existing != null && existing != generatorId) {
             throw new InvalidConfigException("duplicated generator name: " + generatorName);
         }
+
+        byId.computeIfAbsent(generatorId, ignored -> new ArrayList<>()).add(properties);
+    }
+
+    private static Map<Long, List<GeneratorProperties>> freezeByGeneratorId(Map<Long, List<GeneratorProperties>> byId) {
+        Map<Long, List<GeneratorProperties>> frozen = new HashMap<>();
+        for (Map.Entry<Long, List<GeneratorProperties>> entry : byId.entrySet()) {
+            frozen.put(entry.getKey(), List.copyOf(entry.getValue()));
+        }
+        return Map.copyOf(frozen);
     }
 }

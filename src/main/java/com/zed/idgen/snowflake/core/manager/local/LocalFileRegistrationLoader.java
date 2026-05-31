@@ -30,7 +30,7 @@ import java.util.stream.Stream;
  * <p>
  * domain.yml is read once during loader construction because domain info
  * defines the UID bit layout and decode rules. Generator files are still read
- * on each loadGenerator call so local generator changes can be picked up
+ * on each loadGeneratorProperties call so local generator changes can be picked up
  * without changing the domain snapshot.
  */
 class LocalFileRegistrationLoader implements RegistrationLoader {
@@ -65,18 +65,18 @@ class LocalFileRegistrationLoader implements RegistrationLoader {
     }
 
     /**
-     * Loads a generator by GeneratorParam. GeneratorParam locates the file by
-     * id, name, or both. Caller-specific domain checks happen outside this
-     * registration lookup using the returned IdDomainInfo.
+     * Loads registered worker bindings by GeneratorParam. Local file mode maps
+     * one generator file to one worker binding, so the returned list currently
+     * contains exactly one item.
      */
     @Override
-    public GeneratorProperties loadGenerator(GeneratorParam generatorParam) {
+    public List<GeneratorProperties> loadGeneratorProperties(GeneratorParam generatorParam) {
         if (generatorParam == null) {
             throw new InvalidConfigException("generator param must not be null");
         }
         GeneratorConfigIndex index = loadGeneratorConfigIndex();
         GeneratorConfigFile configFile = findGeneratorConfig(generatorParam, index);
-        return loadGeneratorProperties(configFile, domainInfo);
+        return List.of(loadGeneratorProperties(configFile, domainInfo));
     }
 
     /**
@@ -149,12 +149,12 @@ class LocalFileRegistrationLoader implements RegistrationLoader {
         String generatorName = resolveGeneratorName(configFile, localConfig);
         validateDomainId(configFile, localConfig, domainInfo);
         validateDomainName(configFile, localConfig, domainInfo);
-        List<Long> workers = resolveWorkers(configFile, localConfig);
+        long workerId = resolveWorker(configFile, localConfig);
 
         return new GeneratorProperties(
                 domainInfo,
                 new GeneratorConfig(generatorId, generatorName, localConfig.generationPolicy()),
-                workers,
+                workerId,
                 null
         );
     }
@@ -287,9 +287,9 @@ class LocalFileRegistrationLoader implements RegistrationLoader {
      * Local file registration supports zero or one worker only; omitted
      * workerId is filled from the worker id encoded in the filename.
      */
-    private static List<Long> resolveWorkers(GeneratorConfigFile configFile, LocalFileGeneratorConfig config) {
+    private static long resolveWorker(GeneratorConfigFile configFile, LocalFileGeneratorConfig config) {
         if (config.workerId() == null) {
-            return List.of(configFile.workerId());
+            return configFile.workerId();
         }
         long workerId = config.workerId();
         if (workerId < 0) {
@@ -299,7 +299,7 @@ class LocalFileRegistrationLoader implements RegistrationLoader {
             throw new InvalidConfigException("worker id mismatch, filename: " + configFile.workerId()
                     + ", config: " + workerId);
         }
-        return List.of(workerId);
+        return workerId;
     }
 
     /**

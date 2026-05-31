@@ -9,7 +9,12 @@ public enum SnowflakeErrorCode {
     IdRunOut(3, "id run out"),
     MaxRetryExceeded(4, "max retry exceeded"),
     GeneratorNotStarted(5, "generator not started"),
-    GeneratorStopped(6, "generator stopped"),;
+    GeneratorStopped(6, "generator stopped"),
+    NoAvailableWorker(7, "no available worker"),
+    GeneratorAlreadyRunning(8, "generator already running"),
+    GeneratorConflict(9, "generator conflict"),
+    WorkerAlreadyRunning(10, "worker already running"),
+    RuntimeManagerClosed(11, "runtime manager closed"),;
 
     private final int code;
     private final String message;

@@ -7,8 +7,6 @@ import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
 import com.zed.idgen.snowflake.core.model.GeneratorInstanceProperties;
 import com.zed.idgen.snowflake.core.model.IdDomainInfo;
 
-import java.util.List;
-
 public final class IdGeneratorFactory {
     private IdGeneratorFactory() {
     }
@@ -22,7 +20,7 @@ public final class IdGeneratorFactory {
         validatePolicy(properties.generationPolicy());
 
         IdCodec idCodec = new IdCodec(domainInfo);
-        long worker = resolveSingleWorker(properties.workers(), idCodec);
+        long worker = resolveWorker(properties.workerId(), idCodec);
 
         return new DefaultIdGenerator(new DefaultIdProvider(worker, idCodec, properties.generationPolicy()));
     }
@@ -58,12 +56,7 @@ public final class IdGeneratorFactory {
         }
     }
 
-    private static long resolveSingleWorker(List<Long> workers, IdCodec idCodec) {
-        // receiving a list of works for forward compatibility. now only allow single worker
-        if (workers == null || workers.size() != 1 || workers.getFirst() == null) {
-            throw new InvalidConfigException("exactly one worker is required");
-        }
-        long worker = workers.getFirst();
+    private static long resolveWorker(long worker, IdCodec idCodec) {
         if (worker < 0 || worker > idCodec.getMaxWorker()) {
             throw new InvalidConfigException("worker id exceeds domain worker range: " + worker);
         }

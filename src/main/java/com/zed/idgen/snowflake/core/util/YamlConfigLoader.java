@@ -1,12 +1,19 @@
 package com.zed.idgen.snowflake.core.util;
 
 import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
+import tools.jackson.databind.DeserializationFeature;
 import tools.jackson.dataformat.yaml.YAMLMapper;
 
 import java.nio.file.Path;
 
 public final class YamlConfigLoader {
-    private static final YAMLMapper YAML_MAPPER = new YAMLMapper();
+    /*
+     * Config files are registration contracts, so unknown fields should fail
+     * fast instead of being silently ignored as a misspelled or obsolete option.
+     */
+    private static final YAMLMapper YAML_MAPPER = YAMLMapper.builder()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, true)
+            .build();
 
     private YamlConfigLoader() {
     }

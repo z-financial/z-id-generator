@@ -3,6 +3,8 @@ package com.zed.idgen.snowflake.core.manager;
 import com.zed.idgen.snowflake.core.model.GeneratorProperties;
 import com.zed.idgen.snowflake.core.model.IdDomainInfo;
 
+import java.util.List;
+
 public interface RegistrationLoader {
     /**
      * Returns the stable domain definition snapshot for this registration source.
@@ -12,9 +14,11 @@ public interface RegistrationLoader {
     IdDomainInfo getDomainInfo();
 
     /**
-     * Loads generator registration data. GeneratorParam locates the generator.
+     * Loads registered worker bindings under the requested generator config.
+     * This method only loads registration/config data; it must not acquire
+     * runtime leases or decide which worker this JVM should run.
      * Implementations may reload generator config dynamically, but returned
      * properties must still use the stable domain snapshot from getDomainInfo().
      */
-    GeneratorProperties loadGenerator(GeneratorParam generatorParam);
+    List<GeneratorProperties> loadGeneratorProperties(GeneratorParam generatorParam);
 }

@@ -36,22 +36,38 @@ class ConfigRegistrationLoaderTest {
         assertEquals(PrefixType.POSITIVE_SIGNAL, domainInfo.prefixType());
         assertEquals(TimeUnit.MILLISECOND, domainInfo.timeUnit());
 
-        GeneratorProperties order = loader.loadGenerator(new GeneratorParam(11L, null));
-        assertEquals(List.of(0L), order.workerIds());
+        GeneratorProperties order = loader.loadGeneratorProperties(new GeneratorParam(11L, null)).getFirst();
+        assertEquals(0L, order.workerId());
         assertEquals(1, order.generatorConfig().generationPolicy().maximumRetry());
         assertEquals(IdRunOutPolicy.NONE, order.generatorConfig().generationPolicy().idRunOutPolicy());
         assertEquals(ClockRollbackPolicy.NONE, order.generatorConfig().generationPolicy().clockRollbackPolicy());
 
-        GeneratorProperties payment = loader.loadGenerator(new GeneratorParam(null, "payment"));
-        assertEquals(List.of(2L), payment.workerIds());
+        GeneratorProperties payment = loader.loadGeneratorProperties(new GeneratorParam(null, "payment")).getFirst();
+        assertEquals(2L, payment.workerId());
 
-        GeneratorProperties invoice = loader.loadGenerator(new GeneratorParam(13L, "invoice"));
-        assertEquals(List.of(1L), invoice.workerIds());
+        GeneratorProperties invoice = loader.loadGeneratorProperties(new GeneratorParam(13L, "invoice")).getFirst();
+        assertEquals(1L, invoice.workerId());
         assertEquals(0, invoice.generatorConfig().generationPolicy().maximumRetry());
     }
 
     @Test
-    void rejectsDuplicateGeneratorId() {
+    void loadsMultipleWorkerBindingsUnderSameGeneratorConfig() {
+        ConfigRegistrationLoader loader = new ConfigRegistrationLoader(config(
+                domain(null, null),
+                List.of(
+                        generator(11L, "order", null, 1L),
+                        generator(11L, "order", null, 2L),
+                        generator(11L, "order", null, 3L)
+                )
+        ));
+
+        List<GeneratorProperties> properties = loader.loadGeneratorProperties(new GeneratorParam(11L, "order"));
+
+        assertEquals(List.of(1L, 2L, 3L), properties.stream().map(GeneratorProperties::workerId).toList());
+    }
+
+    @Test
+    void rejectsSameGeneratorIdWithDifferentName() {
         InvalidConfigException ex = assertThrows(InvalidConfigException.class,
                 () -> new ConfigRegistrationLoader(config(
                         domain(null, null),
@@ -61,7 +77,21 @@ class ConfigRegistrationLoaderTest {
                         )
                 )));
 
-        assertTrue(ex.getMessage().contains("duplicated generator id"));
+        assertTrue(ex.getMessage().contains("same generator id has different names"));
+    }
+
+    @Test
+    void rejectsSameGeneratorIdWithDifferentPolicy() {
+        InvalidConfigException ex = assertThrows(InvalidConfigException.class,
+                () -> new ConfigRegistrationLoader(config(
+                        domain(null, null),
+                        List.of(
+                                generator(11L, "order", null, 1L),
+                                generator(11L, "order", policy(2, null, null), 2L)
+                        )
+                )));
+
+        assertTrue(ex.getMessage().contains("different generation policies"));
     }
 
     @Test
@@ -126,7 +156,7 @@ class ConfigRegistrationLoaderTest {
         ));
 
         InvalidConfigException ex = assertThrows(InvalidConfigException.class,
-                () -> loader.loadGenerator(new GeneratorParam(11L, "payment")));
+                () -> loader.loadGeneratorProperties(new GeneratorParam(11L, "payment")));
 
         assertTrue(ex.getMessage().contains("generator name mismatch"));
     }
