@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS domain (
+CREATE TABLE IF NOT EXISTS domains (
     domain_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     domain_name VARCHAR(128) NOT NULL UNIQUE,
     prefix_type VARCHAR(32) NOT NULL,
@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS domain (
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
 );
 
-CREATE TABLE IF NOT EXISTS generator_config (
+CREATE TABLE IF NOT EXISTS generator_configs (
     generator_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     domain_id BIGINT NOT NULL,
     generator_name VARCHAR(128) NOT NULL,
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS generator_config (
     KEY idx_domain_id(domain_id)
 );
 
-CREATE TABLE IF NOT EXISTS worker (
+CREATE TABLE IF NOT EXISTS workers (
     id BIGINT PRIMARY KEY AUTO_INCREMENT,
     domain_id BIGINT NOT NULL,
     generator_id BIGINT NOT NULL,
@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS worker (
     KEY idx_domain_generator(domain_id, generator_id)
 );
 
-CREATE TABLE IF NOT EXISTS lease (
+CREATE TABLE IF NOT EXISTS leases (
     lease_id BIGINT PRIMARY KEY AUTO_INCREMENT,
     lease_domain VARCHAR(64) NOT NULL,
     lease_ref BIGINT NOT NULL,

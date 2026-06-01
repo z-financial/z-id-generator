@@ -3,7 +3,6 @@ package com.zed.idgen.snowflake.core.manager;
 import com.zed.idgen.snowflake.core.IdGenerator;
 import com.zed.idgen.snowflake.core.exception.IdGenerationException;
 import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
-import com.zed.idgen.snowflake.core.generator.GeneratorStatus;
 import com.zed.idgen.snowflake.core.generator.IdGeneratorFactory;
 import com.zed.idgen.snowflake.core.generator.IdGeneratorInstance;
 import com.zed.idgen.snowflake.core.model.GeneratorConfig;
@@ -14,6 +13,7 @@ import com.zed.idgen.snowflake.core.model.IdDomainInfo;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -36,6 +36,12 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
     private final Lock writeLock = runtimeLock.writeLock();
     private final Map<Long, Map<Long, RuntimeGeneratorEntry>> byGeneratorId = new HashMap<>();
     private final Map<Long, Long> workerIdToGeneratorId = new HashMap<>();
+    /*
+     * Runtime instance ids are unique only inside this manager process. They are
+     * useful for comparing different incarnations of the same generator/worker
+     * without relying on object equality or mutable lifecycle state.
+     */
+    private final AtomicLong instanceIdSequence = new AtomicLong();
     private boolean closed;
 
     protected AbstractGeneratorRuntimeManager(RegistrationLoader registrationLoader) {
@@ -163,7 +169,7 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
                 return false;
             }
 
-            entry.generator().setStatus(GeneratorStatus.STOPPED);
+            entry.generator().stop();
             removeEntry(entry);
             return true;
         } finally {
@@ -179,7 +185,7 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
             }
             for (Map<Long, RuntimeGeneratorEntry> entries : byGeneratorId.values()) {
                 for (RuntimeGeneratorEntry entry : entries.values()) {
-                    entry.generator().setStatus(GeneratorStatus.STOPPED);
+                    entry.generator().stop();
                 }
             }
             byGeneratorId.clear();
@@ -209,7 +215,7 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
         long workerId = instanceProperties.workerId();
         assertWorkerCanStart(config.generatorId(), workerId);
 
-        IdGeneratorInstance generator = IdGeneratorFactory.create(instanceProperties);
+        IdGeneratorInstance generator = IdGeneratorFactory.create(instanceProperties, nextInstanceId());
         RuntimeGeneratorEntry entry = new RuntimeGeneratorEntry(
                 config.generatorId(),
                 config.generatorName(),
@@ -218,13 +224,21 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
         );
 
         try {
-            generator.setStatus(GeneratorStatus.RUNNING);
+            generator.start();
             publish(entry);
             return entry;
         } catch (RuntimeException e) {
-            generator.setStatus(GeneratorStatus.STOPPED);
+            generator.stop();
             throw e;
         }
+    }
+
+    private long nextInstanceId() {
+        long instanceId = instanceIdSequence.incrementAndGet();
+        if (instanceId <= 0) {
+            throw new InvalidConfigException("runtime instance id overflow");
+        }
+        return instanceId;
     }
 
     private void publish(RuntimeGeneratorEntry entry) {

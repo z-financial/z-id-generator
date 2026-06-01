@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-@TableName("domain")
+@TableName("domains")
 public class DomainEntity {
 
     @TableId(value = "domain_id", type = IdType.AUTO)

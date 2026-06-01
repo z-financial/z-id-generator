@@ -11,9 +11,12 @@ public final class IdGeneratorFactory {
     private IdGeneratorFactory() {
     }
 
-    public static IdGeneratorInstance create(GeneratorInstanceProperties properties) {
+    public static IdGeneratorInstance create(GeneratorInstanceProperties properties, long instanceId) {
         if (properties == null) {
             throw new InvalidConfigException("generator instance properties must not be null");
+        }
+        if (instanceId <= 0) {
+            throw new InvalidConfigException("instance id must be positive");
         }
         IdDomainInfo domainInfo = requireDomainInfo(properties);
         validateGeneratorIdentity(properties);
@@ -22,7 +25,7 @@ public final class IdGeneratorFactory {
         IdCodec idCodec = new IdCodec(domainInfo);
         long worker = resolveWorker(properties.workerId(), idCodec);
 
-        return new DefaultIdGenerator(new DefaultIdProvider(worker, idCodec, properties.generationPolicy()));
+        return new DefaultIdGenerator(new DefaultIdProvider(worker, idCodec, properties.generationPolicy()), instanceId);
     }
 
     private static IdDomainInfo requireDomainInfo(GeneratorInstanceProperties properties) {

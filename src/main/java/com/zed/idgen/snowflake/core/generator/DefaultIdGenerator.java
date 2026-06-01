@@ -8,36 +8,64 @@ import java.util.concurrent.atomic.AtomicReference;
 
 public class DefaultIdGenerator implements IdGeneratorInstance {
     private final IdProvider idProvider;
+    private final long instanceId;
     /*
      * Status is checked on every ID generation call, but state transitions are
      * rare. AtomicReference gives volatile visibility for the hot-path read and
-     * CAS for legal lifecycle transitions without adding another monitor before
-     * the already-synchronized IdProvider. Because setStatus is not an extreme
-     * hot path, CAS contention should stay low and avoid the performance cost of
-     * serializing all generation calls on this generator object.
+     * CAS for legal lifecycle transitions without adding another monitor around
+     * generation. Starting/stopping is not an extreme hot path, so CAS contention
+     * should stay low while generation keeps only the cheap volatile read.
      */
     private final AtomicReference<GeneratorStatus> status = new AtomicReference<>(GeneratorStatus.INIT);
 
-    DefaultIdGenerator(IdProvider idProvider) {
+    DefaultIdGenerator(IdProvider idProvider, long instanceId) {
         if (idProvider == null) {
             throw new IllegalArgumentException("idProvider must not be null");
         }
+        if (instanceId <= 0) {
+            throw new IllegalArgumentException("instanceId must be positive");
+        }
         this.idProvider = idProvider;
+        this.instanceId = instanceId;
     }
 
     @Override
-    public void setStatus(GeneratorStatus status) {
-        if (status == null) {
-            throw new IllegalArgumentException("generator status must not be null");
-        }
+    public boolean canGenerate() {
+        return status.get() == GeneratorStatus.RUNNING;
+    }
 
+    @Override
+    public boolean start() {
         while (true) {
-            GeneratorStatus current = this.status.get();
-            validateTransition(current, status);
-            if (current == status || this.status.compareAndSet(current, status)) {
-                return;
+            GeneratorStatus current = status.get();
+            if (current == GeneratorStatus.RUNNING) {
+                return false;
+            }
+            if (current == GeneratorStatus.STOPPED) {
+                throw IdGenerationException.generatorStopped();
+            }
+            if (status.compareAndSet(GeneratorStatus.INIT, GeneratorStatus.RUNNING)) {
+                return true;
             }
         }
+    }
+
+    @Override
+    public boolean stop() {
+        while (true) {
+            GeneratorStatus current = status.get();
+            if (current == GeneratorStatus.STOPPED) {
+                return false;
+            }
+            if (status.compareAndSet(current, GeneratorStatus.STOPPED)) {
+                return true;
+            }
+        }
+    }
+
+    @Override
+    public long getInstanceId() {
+        return instanceId;
     }
 
     @Override
@@ -50,15 +78,6 @@ public class DefaultIdGenerator implements IdGeneratorInstance {
     public long[] getUidByBatch(int size) {
         requireRunning(status.get());
         return idProvider.nextIds(size);
-    }
-
-    private static void validateTransition(GeneratorStatus current, GeneratorStatus target) {
-        if (current == GeneratorStatus.STOPPED && target != GeneratorStatus.STOPPED) {
-            throw new IllegalStateException("stopped generator cannot be restarted");
-        }
-        if (current == GeneratorStatus.RUNNING && target == GeneratorStatus.INIT) {
-            throw new IllegalStateException("running generator cannot move back to init");
-        }
     }
 
     private static void requireRunning(GeneratorStatus status) {

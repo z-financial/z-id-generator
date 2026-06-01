@@ -3,6 +3,7 @@ package com.zed.idgen.snowflake.core.manager.config;
 import com.zed.idgen.snowflake.core.IdGenerator;
 import com.zed.idgen.snowflake.core.exception.IdGenerationException;
 import com.zed.idgen.snowflake.core.exception.SnowflakeErrorCode;
+import com.zed.idgen.snowflake.core.generator.IdGeneratorInstance;
 import com.zed.idgen.snowflake.core.manager.config.ConfigRuntimeConfig.GeneratorConfig;
 import com.zed.idgen.snowflake.core.manager.config.ConfigRuntimeConfig.IdDomainConfig;
 import org.junit.jupiter.api.Test;
@@ -45,6 +46,10 @@ class ConfiguredGeneratorRuntimeManagerTest {
 
             Map<Long, IdGenerator> generators = manager.getGeneratorInstances(11L);
 
+            assertTrue(((IdGeneratorInstance) worker1).getInstanceId() > 0);
+            assertTrue(((IdGeneratorInstance) worker2).getInstanceId() > 0);
+            assertFalse(((IdGeneratorInstance) worker1).getInstanceId()
+                    == ((IdGeneratorInstance) worker2).getInstanceId());
             assertEquals(2, generators.size());
             assertSame(worker1, generators.get(1L));
             assertSame(worker2, generators.get(2L));

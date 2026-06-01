@@ -40,4 +40,8 @@ public class IdGenerationException extends SnowflakeException {
         return new IdGenerationException("generator runtime manager is closed",
                 SnowflakeErrorCode.RuntimeManagerClosed);
     }
+
+    public static IdGenerationException leaseExpired() {
+        return new IdGenerationException("lease expired", SnowflakeErrorCode.LeaseExpired);
+    }
 }

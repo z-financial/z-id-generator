@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-@TableName("worker")
+@TableName("workers")
 public class WorkerEntity {
 
     @TableId(value = "id", type = IdType.AUTO)

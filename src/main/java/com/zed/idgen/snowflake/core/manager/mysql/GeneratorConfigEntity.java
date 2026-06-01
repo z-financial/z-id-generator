@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-@TableName("generator_config")
+@TableName("generator_configs")
 public class GeneratorConfigEntity {
 
     @TableId(value = "generator_id", type = IdType.AUTO)
