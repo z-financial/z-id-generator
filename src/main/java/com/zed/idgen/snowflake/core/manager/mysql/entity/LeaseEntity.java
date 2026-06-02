@@ -1,4 +1,4 @@
-package com.zed.idgen.snowflake.core.manager.mysql;
+package com.zed.idgen.snowflake.core.manager.mysql.entity;
 
 import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.IdType;
@@ -14,20 +14,35 @@ import java.time.LocalDateTime;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-@TableName("generator_configs")
-public class GeneratorConfigEntity {
+@TableName("leases")
+public class LeaseEntity {
 
-    @TableId(value = "generator_id", type = IdType.AUTO)
-    private Long generatorId;
+    @TableId(value = "lease_id", type = IdType.AUTO)
+    private Long leaseId;
 
-    @TableField("domain_id")
-    private Long domainId;
+    @TableField("lease_domain")
+    private String leaseDomain;
 
-    @TableField("generator_name")
-    private String generatorName;
+    @TableField("lease_ref")
+    private Long leaseRef;
 
-    @TableField("policy")
-    private String policy;
+    @TableField("lease_description")
+    private String leaseDescription;
+
+    @TableField("owner_id")
+    private String ownerId;
+
+    @TableField("owner_token")
+    private String ownerToken;
+
+    @TableField("fencing_token")
+    private Long fencingToken;
+
+    @TableField("renewed_at")
+    private LocalDateTime renewedAt;
+
+    @TableField("expired_at")
+    private LocalDateTime expiredAt;
 
     @TableField(value = "created_at", insertStrategy = FieldStrategy.NEVER, updateStrategy = FieldStrategy.NEVER)
     private LocalDateTime createdAt;

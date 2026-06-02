@@ -1,7 +1,7 @@
 package com.zed.idgen.snowflake.core.manager.mysql.dao;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import com.zed.idgen.snowflake.core.manager.mysql.DomainEntity;
+import com.zed.idgen.snowflake.core.manager.mysql.entity.DomainEntity;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 

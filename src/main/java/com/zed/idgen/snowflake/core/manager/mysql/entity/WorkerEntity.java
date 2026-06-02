@@ -1,4 +1,4 @@
-package com.zed.idgen.snowflake.core.manager.mysql;
+package com.zed.idgen.snowflake.core.manager.mysql.entity;
 
 import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.IdType;

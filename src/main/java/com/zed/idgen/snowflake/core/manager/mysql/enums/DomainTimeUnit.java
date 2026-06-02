@@ -1,4 +1,4 @@
-package com.zed.idgen.snowflake.core.manager.mysql;
+package com.zed.idgen.snowflake.core.manager.mysql.enums;
 
 import com.baomidou.mybatisplus.annotation.EnumValue;
 import lombok.Getter;

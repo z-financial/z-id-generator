@@ -1,8 +1,12 @@
 package com.zed.idgen.snowflake.core.exception;
 
 public class MysqlLeaseException extends SnowflakeException {
-    private MysqlLeaseException(String message, Throwable cause) {
-        super(message, cause, SnowflakeErrorCode.MysqlLeaseOperationFailed);
+    public MysqlLeaseException(String message, Throwable cause) {
+        this(message, cause, SnowflakeErrorCode.MysqlLeaseOperationFailed);
+    }
+
+    protected MysqlLeaseException(String message, Throwable cause, SnowflakeErrorCode errorCode) {
+        super(message, cause, errorCode);
     }
 
     public static MysqlLeaseException operationFailed(String operation, Throwable cause) {
