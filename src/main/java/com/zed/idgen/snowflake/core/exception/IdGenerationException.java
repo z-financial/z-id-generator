@@ -44,4 +44,9 @@ public class IdGenerationException extends SnowflakeException {
     public static IdGenerationException leaseExpired() {
         return new IdGenerationException("lease expired", SnowflakeErrorCode.LeaseExpired);
     }
+
+    public static IdGenerationException workerCandidateUnavailable(long generatorId, long workerId) {
+        return new IdGenerationException("worker candidate is unavailable, generator id: "
+                + generatorId + ", worker id: " + workerId, SnowflakeErrorCode.WorkerCandidateUnavailable);
+    }
 }

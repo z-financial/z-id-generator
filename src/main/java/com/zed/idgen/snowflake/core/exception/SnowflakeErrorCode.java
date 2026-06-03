@@ -16,7 +16,8 @@ public enum SnowflakeErrorCode {
     RuntimeManagerClosed(11, "runtime manager closed"),
     LeaseExpired(12, "lease expired"),
     MysqlLeaseOperationFailed(13, "mysql lease operation failed"),
-    MysqlLeaseOperationTimeout(14, "mysql lease operation timeout"),;
+    MysqlLeaseOperationTimeout(14, "mysql lease operation timeout"),
+    WorkerCandidateUnavailable(15, "worker candidate unavailable"),;
 
     private final int code;
     private final String message;

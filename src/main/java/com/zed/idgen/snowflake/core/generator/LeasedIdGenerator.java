@@ -32,7 +32,7 @@ public class LeasedIdGenerator implements IdGeneratorInstance {
     /*
      * Serializes rare lifecycle operations and the rare expired-deadline path.
      * Hot getUid() calls only take this lock when the fast deadline check fails.
-     0*/
+     */
     private final Object lifecycleLock = new Object();
 
     public LeasedIdGenerator(IdGeneratorInstance delegate, long localExpireAtNanos, LeaseInfo leaseInfo) {
@@ -151,6 +151,21 @@ public class LeasedIdGenerator implements IdGeneratorInstance {
         }
     }
 
+    /**
+     * Stops this generator when its local safe lease deadline has been lost.
+     * Background cleaners use this before removing the runtime entry. Returning
+     * true means the caller should remove the generator from the runtime map.
+     */
+    public boolean stopIfLocalExpired() {
+        synchronized (lifecycleLock) {
+            if (isLocalExpired()) {
+                markLeaseLost();
+                return true;
+            }
+            return false;
+        }
+    }
+
     private void ensureAvailableForGenerate() {
         if (leaseLost.get()) {
             throw IdGenerationException.leaseExpired();
@@ -173,6 +188,10 @@ public class LeasedIdGenerator implements IdGeneratorInstance {
     private void markLeaseLost() {
         leaseLost.set(true);
         delegate.stop();
+    }
+
+    private boolean isLocalExpired() {
+        return leaseLost.get() || isLocalDeadlinePassed();
     }
 
     private boolean isLocalDeadlinePassed() {

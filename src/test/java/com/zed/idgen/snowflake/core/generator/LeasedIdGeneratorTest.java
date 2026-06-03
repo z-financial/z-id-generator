@@ -49,6 +49,21 @@ class LeasedIdGeneratorTest {
     }
 
     @Test
+    void stopIfLocalExpiredMarksLeaseLostAndStopsDelegate() {
+        LeasedIdGenerator generator = new LeasedIdGenerator(
+                new DefaultIdGenerator(new FixedIdProvider(), 14L),
+                System.nanoTime() - 1L,
+                leaseInfo()
+        );
+
+        assertTrue(generator.stopIfLocalExpired());
+        assertFalse(generator.canGenerate());
+
+        IdGenerationException ex = assertThrows(IdGenerationException.class, generator::getUid);
+        assertEquals(SnowflakeErrorCode.LeaseExpired, ex.getErrorCode());
+    }
+
+    @Test
     void secondGenerationGuardRejectsIdsProducedAfterDeadlinePasses() {
         SlowIdProvider provider = new SlowIdProvider();
         LeasedIdGenerator generator = new LeasedIdGenerator(
