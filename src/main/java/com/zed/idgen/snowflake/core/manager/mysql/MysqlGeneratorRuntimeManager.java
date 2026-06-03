@@ -2,6 +2,9 @@ package com.zed.idgen.snowflake.core.manager.mysql;
 
 import com.zed.idgen.snowflake.core.exception.IdGenerationException;
 import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
+import com.zed.idgen.snowflake.core.exception.MysqlLeaseException;
+import com.zed.idgen.snowflake.core.exception.SnowflakeErrorCode;
+import com.zed.idgen.snowflake.core.exception.SnowflakeException;
 import com.zed.idgen.snowflake.core.generator.IdGeneratorFactory;
 import com.zed.idgen.snowflake.core.generator.IdGeneratorInstance;
 import com.zed.idgen.snowflake.core.generator.LeaseInfo;
@@ -16,13 +19,17 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.Executors;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -65,6 +72,12 @@ public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManage
      * while the worker queue is nearly full and resumes once capacity recovers.
      */
     private final AtomicBoolean renewSaturated = new AtomicBoolean(false);
+    /*
+     * First unexpected background failure that forced this manager to close.
+     * Expected lease/runtime outcomes are handled inside task bodies; anything
+     * reaching afterExecute is treated as an unsafe state and fails closed.
+     */
+    private final AtomicReference<Throwable> shutdownFor = new AtomicReference<>();
 
     public MysqlGeneratorRuntimeManager(
             MysqlDaoFactory daoFactory,
@@ -100,10 +113,8 @@ public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManage
         this.localSafeTermNanos = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
                 this.runtimeConfig.localSafeTermMillis());
         this.renewWorkerExecutor = newRenewWorkerExecutor(this.runtimeConfig);
-        this.renewExecutor = Executors.newSingleThreadScheduledExecutor(
-                namedThreadFactory("mysql-id-renew-scheduler"));
-        this.cleanerExecutor = Executors.newSingleThreadScheduledExecutor(
-                namedThreadFactory("mysql-id-lease-cleaner"));
+        this.renewExecutor = newBackgroundScheduler("mysql-id-renew-scheduler");
+        this.cleanerExecutor = newBackgroundScheduler("mysql-id-lease-cleaner");
         startBackgroundTasks();
     }
 
@@ -182,10 +193,12 @@ public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManage
                 submitRenewTask(entry);
             }
         } catch (IdGenerationException e) {
-            // Shutdown can close the manager while a scheduled tick is racing.
-            LOGGER.log(Level.FINE, "skip mysql lease renew tick: " + e.getMessage(), e);
-        } catch (RuntimeException e) {
-            LOGGER.log(Level.WARNING, "mysql lease renew scheduler failed", e);
+            /*
+             * RuntimeManagerClosed is a normal shutdown race. Other
+             * IdGenerationException values are still controlled runtime states,
+             * so this scheduled tick can be skipped without killing the JVM.
+             */
+            LOGGER.log(Level.WARNING, "skip mysql lease renew tick: " + e.getMessage(), e);
         }
     }
 
@@ -199,9 +212,16 @@ public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManage
             return;
         }
         try {
-            renewWorkerExecutor.execute(() -> renewRuntimeEntry(entry));
+            renewWorkerExecutor.submit(() -> renewRuntimeEntry(entry));
+        } catch (RejectedExecutionException e) {
+            attachment.renewInFlight().set(false);
+            LOGGER.log(Level.WARNING, "mysql lease renew task rejected: "
+                    + runtimeEntryDescription(entry), e);
         } catch (RuntimeException e) {
             attachment.renewInFlight().set(false);
+            LOGGER.log(Level.SEVERE, "unexpected mysql lease renew submit failure: "
+                    + runtimeEntryDescription(entry), e);
+            // rethrow unexpected RuntimeException to shut down the manager
             throw e;
         }
     }
@@ -210,11 +230,14 @@ public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManage
         MysqlRuntimeAttachment attachment = mysqlAttachment(entry.attachment());
         try {
             if (!(entry.generator() instanceof LeasedIdGenerator generator)) {
-                LOGGER.warning("mysql runtime entry is not a leased generator, stopping it");
+                LOGGER.log(Level.WARNING, "mysql runtime entry is not a leased generator, stopping it: "
+                        + runtimeEntryDescription(entry));
                 stopGeneratorInstance(entry);
                 return;
             }
             if (!generator.canGenerate()) {
+                LOGGER.log(Level.WARNING, "mysql leased generator cannot generate before renew, stopping it: "
+                        + runtimeEntryDescription(entry));
                 stopGeneratorInstance(entry);
                 return;
             }
@@ -222,26 +245,43 @@ public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManage
             boolean renewed;
             try {
                 renewed = leaseManager.renew(attachment.leaseHandle());
-            } catch (RuntimeException e) {
+            } catch (SnowflakeException e) {
+                if (!isLeaseOperationFailure(e)) {
+                    throw e;
+                }
                 /*
                  * A transient DB failure does not immediately prove stale
                  * ownership. Do not extend the local deadline; the cleaner will
                  * stop generation if renewals keep failing.
                  */
-                LOGGER.log(Level.WARNING, "mysql lease renew failed, waiting for local deadline", e);
+                LOGGER.log(Level.WARNING, "mysql lease renew failed, local deadline was not extended, entry: "
+                        + runtimeEntryDescription(entry)
+                        + ", lease: " + leaseHandleDescription(attachment.leaseHandle()), e);
                 return;
             }
             if (!renewed) {
                 // affectedRows == 0 means the lease handle is stale or ownership was lost.
+                LOGGER.log(Level.WARNING, "mysql lease renew returned false, stopping stale entry: "
+                        + runtimeEntryDescription(entry)
+                        + ", lease: " + leaseHandleDescription(attachment.leaseHandle()));
                 stopGeneratorInstance(entry);
                 return;
             }
 
             try {
                 generator.renewLocalDeadline(System.nanoTime() + attachment.localSafeTermNanos());
-            } catch (RuntimeException e) {
+            } catch (SnowflakeException e) {
+                LOGGER.log(Level.WARNING, "mysql lease renewed in DB but local deadline update failed, stopping entry: "
+                        + runtimeEntryDescription(entry)
+                        + ", lease: " + leaseHandleDescription(attachment.leaseHandle()), e);
                 stopGeneratorInstance(entry);
             }
+        } catch (SnowflakeException e) {
+            if (e.getErrorCode() == SnowflakeErrorCode.LeaseExpired) {
+                stopGeneratorInstance(entry);
+            }
+            LOGGER.log(Level.WARNING, "mysql lease renew task skipped by controlled runtime state, entry: "
+                    + runtimeEntryDescription(entry), e);
         } finally {
             attachment.renewInFlight().set(false);
         }
@@ -255,10 +295,8 @@ public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManage
                     stopGeneratorInstance(entry);
                 }
             }
-        } catch (IdGenerationException e) {
-            LOGGER.log(Level.FINE, "skip mysql lease cleanup tick: " + e.getMessage(), e);
-        } catch (RuntimeException e) {
-            LOGGER.log(Level.WARNING, "mysql lease cleanup failed", e);
+        } catch (SnowflakeException e) {
+            LOGGER.log(Level.WARNING, "skip mysql lease cleanup tick: " + e.getMessage(), e);
         }
     }
 
@@ -310,14 +348,78 @@ public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManage
                 namedThreadFactory("mysql-id-renew-worker"),
                 (runnable, executor) -> {
                     renewSaturated.set(true);
-                    LOGGER.warning("mysql lease renew task discarded because renew executor is saturated");
+                    LOGGER.log(Level.WARNING, "mysql lease renew task discarded because renew executor is saturated");
                     /*
                      * Throw after marking backpressure so submitRenewTask can
                      * clear the per-entry renewInFlight guard. Silent discard
                      * would leave that entry unable to renew again.
                      */
                     throw new RejectedExecutionException("mysql lease renew executor is saturated");
-                });
+                }) {
+            @Override
+            protected void afterExecute(Runnable runnable, Throwable throwable) {
+                super.afterExecute(runnable, throwable);
+                handleUnexpectedBackgroundFailure(
+                        "mysql lease renew worker",
+                        extractTaskFailure(runnable, throwable));
+            }
+        };
+    }
+
+    private ScheduledExecutorService newBackgroundScheduler(String threadNamePrefix) {
+        ScheduledThreadPoolExecutor executor = new ScheduledThreadPoolExecutor(
+                1,
+                namedThreadFactory(threadNamePrefix)) {
+            @Override
+            protected void afterExecute(Runnable runnable, Throwable throwable) {
+                super.afterExecute(runnable, throwable);
+                handleUnexpectedBackgroundFailure(
+                        threadNamePrefix,
+                        extractTaskFailure(runnable, throwable));
+            }
+        };
+        executor.setRemoveOnCancelPolicy(true);
+        return executor;
+    }
+
+    private void handleUnexpectedBackgroundFailure(String taskName, Throwable failure) {
+        if (failure == null) {
+            return;
+        }
+        if (shutdownFor.compareAndSet(null, failure)) {
+            LOGGER.log(Level.SEVERE, taskName + " failed unexpectedly; shutting down mysql generator manager", failure);
+            shutdown();
+            return;
+        }
+        LOGGER.log(Level.WARNING, taskName + " failed after manager shutdown was already requested", failure);
+    }
+
+    private static Throwable extractTaskFailure(Runnable runnable, Throwable throwable) {
+        if (throwable != null) {
+            return throwable;
+        }
+        if (!(runnable instanceof Future<?> future) || !future.isDone()) {
+            return null;
+        }
+        try {
+            future.get();
+            return null;
+        } catch (CancellationException e) {
+            return null;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (ExecutionException e) {
+            return e.getCause();
+        }
+    }
+
+    private static boolean isLeaseOperationFailure(SnowflakeException exception) {
+        if (exception instanceof MysqlLeaseException) {
+            return true;
+        }
+        return exception.getErrorCode() == SnowflakeErrorCode.MysqlLeaseOperationFailed
+                || exception.getErrorCode() == SnowflakeErrorCode.MysqlLeaseOperationTimeout;
     }
 
     private boolean renewQueueTooFull() {
@@ -348,6 +450,20 @@ public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManage
         return properties.idDomainInfo().domainName()
                 + ":" + properties.generatorName()
                 + ":" + properties.workerId();
+    }
+
+    private static String runtimeEntryDescription(RuntimeGeneratorEntry entry) {
+        return "generatorId=" + entry.generatorId()
+                + ", generatorName=" + entry.generatorName()
+                + ", workerId=" + entry.workerId()
+                + ", instanceId=" + entry.instanceId();
+    }
+
+    private static String leaseHandleDescription(LeaseHandle leaseHandle) {
+        return "leaseDomain=" + leaseHandle.leaseDomain()
+                + ", leaseRef=" + leaseHandle.leaseRef()
+                + ", ownerId=" + leaseHandle.ownerId()
+                + ", fencingToken=" + leaseHandle.fencingToken();
     }
 
     private static String requireServerInstanceId(String serverInstanceId) {

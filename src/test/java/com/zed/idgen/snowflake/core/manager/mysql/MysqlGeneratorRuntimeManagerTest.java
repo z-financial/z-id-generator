@@ -5,6 +5,8 @@ import com.zed.idgen.snowflake.core.constant.ClockRollbackPolicy;
 import com.zed.idgen.snowflake.core.constant.IdRunOutPolicy;
 import com.zed.idgen.snowflake.core.constant.PrefixType;
 import com.zed.idgen.snowflake.core.constant.TimeUnit;
+import com.zed.idgen.snowflake.core.exception.IdGenerationException;
+import com.zed.idgen.snowflake.core.exception.SnowflakeErrorCode;
 import com.zed.idgen.snowflake.core.manager.RegistrationLoader;
 import com.zed.idgen.snowflake.core.model.GeneratorConfig;
 import com.zed.idgen.snowflake.core.model.GeneratorPolicy;
@@ -17,11 +19,14 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 class MysqlGeneratorRuntimeManagerTest {
 
@@ -46,6 +51,29 @@ class MysqlGeneratorRuntimeManagerTest {
         }
     }
 
+    @Test
+    void unexpectedRenewFailureShutsDownManager() throws InterruptedException {
+        Logger logger = Logger.getLogger(MysqlGeneratorRuntimeManager.class.getName());
+        Level previousLevel = logger.getLevel();
+        logger.setLevel(Level.OFF);
+        FakeLeaseManager leaseManager = new FakeLeaseManager(Set.of(), new IllegalStateException("renew bug"));
+        try {
+            try (MysqlGeneratorRuntimeManager manager = new MysqlGeneratorRuntimeManager(
+                    new FakeRegistrationLoader(),
+                    leaseManager,
+                    "node-a",
+                    fastRuntimeConfig())) {
+
+                assertNotNull(manager.startGeneratorInstance(11L));
+
+                IdGenerationException ex = waitUntilClosed(manager);
+                assertEquals(SnowflakeErrorCode.RuntimeManagerClosed, ex.getErrorCode());
+            }
+        } finally {
+            logger.setLevel(previousLevel);
+        }
+    }
+
     private static MysqlGeneratorRuntimeConfig runtimeConfig() {
         return new MysqlGeneratorRuntimeConfig(
                 10,
@@ -55,6 +83,30 @@ class MysqlGeneratorRuntimeManagerTest {
                 1,
                 1,
                 16);
+    }
+
+    private static MysqlGeneratorRuntimeConfig fastRuntimeConfig() {
+        return new MysqlGeneratorRuntimeConfig(
+                10,
+                8_000L,
+                10L,
+                10L,
+                1,
+                1,
+                16);
+    }
+
+    private static IdGenerationException waitUntilClosed(MysqlGeneratorRuntimeManager manager)
+            throws InterruptedException {
+        for (int i = 0; i < 100; i++) {
+            try {
+                manager.getDomainInfo();
+            } catch (IdGenerationException e) {
+                return e;
+            }
+            Thread.sleep(20L);
+        }
+        return fail("manager did not shut down after unexpected renew failure");
     }
 
     private static final class FakeRegistrationLoader implements RegistrationLoader {
@@ -95,11 +147,17 @@ class MysqlGeneratorRuntimeManagerTest {
 
     private static final class FakeLeaseManager implements LeaseManager {
         private final Set<Long> unavailableRefs;
+        private final RuntimeException renewFailure;
         private final List<Long> acquireRefs = new ArrayList<>();
         private final AtomicInteger releaseCount = new AtomicInteger();
 
         private FakeLeaseManager(Set<Long> unavailableRefs) {
+            this(unavailableRefs, null);
+        }
+
+        private FakeLeaseManager(Set<Long> unavailableRefs, RuntimeException renewFailure) {
             this.unavailableRefs = unavailableRefs;
+            this.renewFailure = renewFailure;
         }
 
         @Override
@@ -119,6 +177,9 @@ class MysqlGeneratorRuntimeManagerTest {
 
         @Override
         public boolean renew(LeaseHandle handle) {
+            if (renewFailure != null) {
+                throw renewFailure;
+            }
             return true;
         }
 
