@@ -27,15 +27,32 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
     private final RegistrationLoader registrationLoader;
     private final RuntimeIdGeneratorFactory instanceFactory;
     /*
+     * Split lock design:
+     * stateLock protects the open/closed lifecycle; dataLock protects runtime
+     * maps only. Keep slow loader/subclass work outside dataLock.
+     *
+     * State lock gates manager lifecycle. Every public/protected runtime
+     * operation takes stateReadLock first so shutdown cannot race with active
+     * reads or modifications. Slow registration/lease/factory work may happen
+     * while holding this read lock; it only blocks shutdown, not normal reads.
+     */
+    private final ReentrantReadWriteLock stateLock = new ReentrantReadWriteLock();
+    private final Lock stateReadLock = stateLock.readLock();
+    private final Lock stateWriteLock = stateLock.writeLock();
+    /*
+     * Data lock protects the runtime indexes only. It is intentionally held for
+     * short map reads/writes so slow source-specific work does not block
+     * getGeneratorInstance/getGeneratorInstances under high concurrency.
+     */
+    private final ReentrantReadWriteLock dataLock = new ReentrantReadWriteLock();
+    private final Lock dataReadLock = dataLock.readLock();
+    private final Lock dataWriteLock = dataLock.writeLock();
+    /*
      * These maps form one logical runtime index. A generator config can have
      * many running worker instances, so byGeneratorId owns entries by
      * generatorId -> workerId. workerIdToGeneratorId is a secondary index for
-     * domain-level worker uniqueness. A single ReadWriteLock keeps cross-map
-     * reads and writes consistent without requiring ConcurrentHashMap.
+     * domain-level worker uniqueness. Access must be protected by dataLock.
      */
-    private final ReentrantReadWriteLock runtimeLock = new ReentrantReadWriteLock();
-    private final Lock readLock = runtimeLock.readLock();
-    private final Lock writeLock = runtimeLock.writeLock();
     private final Map<Long, Map<Long, RuntimeGeneratorEntry>> byGeneratorId = new HashMap<>();
     private final Map<Long, Long> workerIdToGeneratorId = new HashMap<>();
     /*
@@ -64,84 +81,101 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
         this.instanceFactory = instanceFactory;
     }
 
+    // Domain info does not touch runtime indexes; stateReadLock only blocks shutdown.
     @Override
     public IdDomainInfo getDomainInfo() {
-        readLock.lock();
+        stateReadLock.lock();
         try {
             ensureOpen();
             return registrationLoader.getDomainInfo();
         } finally {
-            readLock.unlock();
+            stateReadLock.unlock();
         }
     }
 
+    // Name resolution may hit registration storage while it does not modify the runtime data map, so it deliberately avoids dataLock.
     @Override
     public long resolveGeneratorId(String generatorName) {
         requireGeneratorName(generatorName);
-        readLock.lock();
+        stateReadLock.lock();
         try {
             ensureOpen();
             return registrationLoader.resolveGeneratorId(generatorName);
         } finally {
-            readLock.unlock();
+            stateReadLock.unlock();
         }
     }
 
+    // Loading registration data is source-owned and can be slow; it does not modify the runtime data map, no runtime map lock is needed.
     @Override
     public List<GeneratorProperties> getGeneratorProperties(long generatorId) {
         requireGeneratorId(generatorId);
-        readLock.lock();
+        stateReadLock.lock();
         try {
             ensureOpen();
             return registrationLoader.loadGeneratorProperties(generatorId);
         } finally {
-            readLock.unlock();
+            stateReadLock.unlock();
         }
     }
 
+    // Runtime lookup needs stateReadLock for lifecycle and dataReadLock for a stable map snapshot.
     @Override
     public Map<Long, IdGenerator> getGeneratorInstances(long generatorId) {
         requireGeneratorId(generatorId);
-        readLock.lock();
+        stateReadLock.lock();
         try {
             ensureOpen();
-            Map<Long, RuntimeGeneratorEntry> entries = findRuntimeEntries(generatorId);
-            if (entries.isEmpty()) {
-                return Map.of();
+            dataReadLock.lock();
+            try {
+                Map<Long, RuntimeGeneratorEntry> entries = findRuntimeEntriesUnsafe(generatorId);
+                if (entries.isEmpty()) {
+                    return Map.of();
+                }
+                Map<Long, IdGenerator> generators = new HashMap<>();
+                for (RuntimeGeneratorEntry entry : entries.values()) {
+                    generators.put(entry.workerId(), entry.generator());
+                }
+                return Map.copyOf(generators);
+            } finally {
+                dataReadLock.unlock();
             }
-            Map<Long, IdGenerator> generators = new HashMap<>();
-            for (RuntimeGeneratorEntry entry : entries.values()) {
-                generators.put(entry.workerId(), entry.generator());
-            }
-            return Map.copyOf(generators);
         } finally {
-            readLock.unlock();
+            stateReadLock.unlock();
         }
     }
 
+    // Exact runtime lookup reads only the runtime indexes, so dataReadLock is enough after state check.
     @Override
     public IdGenerator getGeneratorInstance(long generatorId, long workerId) {
         requireGeneratorId(generatorId);
         requireWorkerId(workerId);
-        readLock.lock();
+        stateReadLock.lock();
         try {
             ensureOpen();
-            RuntimeGeneratorEntry entry = findRuntimeEntry(generatorId, workerId);
-            return entry == null ? null : entry.generator();
+            dataReadLock.lock();
+            try {
+                RuntimeGeneratorEntry entry = findRuntimeEntryUnsafe(generatorId, workerId);
+                return entry == null ? null : entry.generator();
+            } finally {
+                dataReadLock.unlock();
+            }
         } finally {
-            readLock.unlock();
+            stateReadLock.unlock();
         }
     }
 
+    // Start holds stateReadLock across slow work, but locks runtime maps only for short checks/publish.
     @Override
     public IdGenerator startGeneratorInstance(long generatorId) {
         requireGeneratorId(generatorId);
-        writeLock.lock();
+        stateReadLock.lock();
         try {
             ensureOpen();
             List<GeneratorProperties> candidates = loadCandidateProperties(generatorId);
             for (GeneratorProperties properties : candidates) {
-                if (workerIdToGeneratorId.containsKey(properties.workerId())) {
+                // Fast pre-check with dataReadLock avoids expensive creation for workers already running locally.
+                if (isWorkerRunning(properties.workerId())) {
                     continue;
                 }
                 try {
@@ -156,15 +190,16 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
             }
             throw IdGenerationException.noAvailableWorker(generatorId);
         } finally {
-            writeLock.unlock();
+            stateReadLock.unlock();
         }
     }
 
+    // Exact start performs an early conflict check; publish still re-checks under dataWriteLock.
     @Override
     public IdGenerator startGeneratorInstance(long generatorId, long workerId) {
         requireGeneratorId(generatorId);
         requireWorkerId(workerId);
-        writeLock.lock();
+        stateReadLock.lock();
         try {
             ensureOpen();
             assertWorkerCanStart(generatorId, workerId);
@@ -174,7 +209,7 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
             }
             return createAndRegister(properties).generator();
         } finally {
-            writeLock.unlock();
+            stateReadLock.unlock();
         }
     }
 
@@ -183,42 +218,73 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
         requireGeneratorId(generatorId);
         requireWorkerId(workerId);
         RuntimeGeneratorEntry stoppedEntry;
-        writeLock.lock();
+        stateReadLock.lock();
         try {
             ensureOpen();
-            RuntimeGeneratorEntry entry = findRuntimeEntry(generatorId, workerId);
-            if (entry == null) {
-                return false;
+            dataReadLock.lock();
+            try {
+                // Capture the current entry under dataReadLock before stopping outside dataLock.
+                stoppedEntry = findRuntimeEntryUnsafe(generatorId, workerId);
+                if (stoppedEntry == null) {
+                    return false;
+                }
+            } finally {
+                dataReadLock.unlock();
             }
 
-            entry.generator().stop();
-            removeEntry(entry);
-            stoppedEntry = entry;
+            /*
+             * Stop outside dataLock so map locks stay limited to index access.
+             * A concurrent lookup may briefly return this stopped generator;
+             * generation remains safe because IdGeneratorInstance validates its
+             * own lifecycle before producing ids.
+             */
+            stoppedEntry.generator().stop();
+
+            dataWriteLock.lock();
+            try {
+                // Revalidate by instanceId before removing; the entry may have been replaced.
+                if (!removeEntryUnsafe(stoppedEntry)) {
+                    return false;
+                }
+            } finally {
+                dataWriteLock.unlock();
+            }
         } finally {
-            writeLock.unlock();
+            stateReadLock.unlock();
         }
         notifyStop(stoppedEntry);
         return true;
     }
 
+    /*
+     * Shutdown owns stateWriteLock, so no new reads/starts/stops can enter
+     * while maps are cleared. Unlike normal stop, it is acceptable to stop
+     * generators under dataWriteLock here because the manager is already
+     * exclusively closing and no latency-sensitive lookup can be blocked.
+     */
     public void shutdown() {
         List<RuntimeGeneratorEntry> stoppedEntries = new ArrayList<>();
-        writeLock.lock();
+        stateWriteLock.lock();
         try {
-            if (closed) {
-                return;
-            }
-            for (Map<Long, RuntimeGeneratorEntry> entries : byGeneratorId.values()) {
-                for (RuntimeGeneratorEntry entry : entries.values()) {
-                    entry.generator().stop();
-                    stoppedEntries.add(entry);
+            dataWriteLock.lock();
+            try {
+                if (closed) {
+                    return;
                 }
+                for (Map<Long, RuntimeGeneratorEntry> entries : byGeneratorId.values()) {
+                    for (RuntimeGeneratorEntry entry : entries.values()) {
+                        entry.generator().stop();
+                        stoppedEntries.add(entry);
+                    }
+                }
+                byGeneratorId.clear();
+                workerIdToGeneratorId.clear();
+                closed = true;
+            } finally {
+                dataWriteLock.unlock();
             }
-            byGeneratorId.clear();
-            workerIdToGeneratorId.clear();
-            closed = true;
         } finally {
-            writeLock.unlock();
+            stateWriteLock.unlock();
         }
         onShutdown();
         for (RuntimeGeneratorEntry entry : stoppedEntries) {
@@ -233,7 +299,7 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
 
     /**
      * Source-specific cleanup hook, for example, deleting the local placeholder
-     * file. It is called after runtime maps are cleared and the write lock is
+     * file. It is called after runtime maps are cleared and both locks are
      * released, so cleanup can do I/O without blocking manager lookups.
      */
     protected void onShutdown() {
@@ -269,7 +335,7 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
 
     /**
      * Called after an entry is removed from the runtime maps during explicit
-     * stop or shutdown. It is intentionally invoked outside the runtime lock so
+     * stop or shutdown. It is intentionally invoked outside the data lock so
      * source-specific cleanup, such as DB lease release, does not block lookups.
      */
     protected void onStopGenerator(
@@ -282,16 +348,21 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
      * The snapshot avoids exposing the mutable runtime indexes.
      */
     protected List<RuntimeGeneratorEntry> listRuntimeGeneratorEntries() {
-        readLock.lock();
+        stateReadLock.lock();
         try {
             ensureOpen();
-            List<RuntimeGeneratorEntry> entries = new ArrayList<>();
-            for (Map<Long, RuntimeGeneratorEntry> workerEntries : byGeneratorId.values()) {
-                entries.addAll(workerEntries.values());
+            dataReadLock.lock();
+            try {
+                List<RuntimeGeneratorEntry> entries = new ArrayList<>();
+                for (Map<Long, RuntimeGeneratorEntry> workerEntries : byGeneratorId.values()) {
+                    entries.addAll(workerEntries.values());
+                }
+                return List.copyOf(entries);
+            } finally {
+                dataReadLock.unlock();
             }
-            return List.copyOf(entries);
         } finally {
-            readLock.unlock();
+            stateReadLock.unlock();
         }
     }
 
@@ -304,20 +375,40 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
             return false;
         }
         RuntimeGeneratorEntry stoppedEntry = null;
-        writeLock.lock();
+        stateReadLock.lock();
         try {
             if (closed) {
                 return false;
             }
-            RuntimeGeneratorEntry current = findRuntimeEntry(entry.generatorId(), entry.workerId());
-            if (!sameRuntimeEntry(entry, current)) {
-                return false;
+            dataReadLock.lock();
+            try {
+                RuntimeGeneratorEntry current = findRuntimeEntryUnsafe(entry.generatorId(), entry.workerId());
+                if (!sameRuntimeEntry(entry, current)) {
+                    return false;
+                }
+                stoppedEntry = current;
+            } finally {
+                dataReadLock.unlock();
             }
-            current.generator().stop();
-            removeEntry(current);
-            stoppedEntry = current;
+
+            /*
+             * Stop outside dataLock. If another thread removes/replaces this
+             * worker before we reacquire dataWriteLock, removeEntryUnsafe will
+             * reject the stale entry by instanceId and leave the new entry
+             * untouched.
+             */
+            stoppedEntry.generator().stop();
+
+            dataWriteLock.lock();
+            try {
+                if (!removeEntryUnsafe(stoppedEntry)) {
+                    return false;
+                }
+            } finally {
+                dataWriteLock.unlock();
+            }
         } finally {
-            writeLock.unlock();
+            stateReadLock.unlock();
         }
         notifyStop(stoppedEntry);
         return true;
@@ -377,49 +468,85 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
         return instanceId;
     }
 
+    // Final publication is the authoritative conflict check after slow creation work.
     private void publish(RuntimeGeneratorEntry entry) {
-        assertWorkerCanStart(entry.generatorId(), entry.workerId());
-        byGeneratorId.computeIfAbsent(entry.generatorId(), ignored -> new HashMap<>())
-                .put(entry.workerId(), entry);
-        workerIdToGeneratorId.put(entry.workerId(), entry.generatorId());
-    }
-
-    private void removeEntry(RuntimeGeneratorEntry entry) {
-        Map<Long, RuntimeGeneratorEntry> entries = byGeneratorId.get(entry.generatorId());
-        if (entries != null) {
-            entries.remove(entry.workerId());
-            if (entries.isEmpty()) {
-                byGeneratorId.remove(entry.generatorId());
-            }
+        dataWriteLock.lock();
+        try {
+            assertWorkerCanStartUnsafe(entry.generatorId(), entry.workerId());
+            byGeneratorId.computeIfAbsent(entry.generatorId(), ignored -> new HashMap<>())
+                    .put(entry.workerId(), entry);
+            workerIdToGeneratorId.put(entry.workerId(), entry.generatorId());
+        } finally {
+            dataWriteLock.unlock();
         }
-        workerIdToGeneratorId.remove(entry.workerId(), entry.generatorId());
     }
 
     /**
-     * Returns running entries for one canonical generator id. Missing runtime
-     * state is a normal query miss and returns an empty map.
+     * Caller must hold dataWriteLock. The instance-id check prevents stale
+     * background tasks from removing a newer incarnation of the same worker.
      */
-    private Map<Long, RuntimeGeneratorEntry> findRuntimeEntries(long generatorId) {
+    private boolean removeEntryUnsafe(RuntimeGeneratorEntry entry) {
+        Map<Long, RuntimeGeneratorEntry> entries = byGeneratorId.get(entry.generatorId());
+        if (entries == null) {
+            return false;
+        }
+        RuntimeGeneratorEntry current = entries.get(entry.workerId());
+        // A stale stop/cleanup task must not remove a newer instance for the same worker.
+        if (!sameRuntimeEntry(entry, current)) {
+            return false;
+        }
+        entries.remove(entry.workerId());
+        if (entries.isEmpty()) {
+            byGeneratorId.remove(entry.generatorId());
+        }
+        workerIdToGeneratorId.remove(entry.workerId(), entry.generatorId());
+        return true;
+    }
+
+    /**
+     * Caller must hold dataLock. Missing runtime state is a normal query miss
+     * and returns an empty map.
+     */
+    private Map<Long, RuntimeGeneratorEntry> findRuntimeEntriesUnsafe(long generatorId) {
         Map<Long, RuntimeGeneratorEntry> entries = byGeneratorId.get(generatorId);
         return entries == null ? Map.of() : entries;
     }
 
-    private RuntimeGeneratorEntry findRuntimeEntry(long generatorId, long workerId) {
-        return findRuntimeEntries(generatorId).get(workerId);
+    private RuntimeGeneratorEntry findRuntimeEntryUnsafe(long generatorId, long workerId) {
+        return findRuntimeEntriesUnsafe(generatorId).get(workerId);
     }
 
     /**
      * Checks both runtime indexes before starting a worker. The exact
      * generator/worker duplicate gets the more specific error; a worker already
      * owned by another generator is reported as a domain-level worker conflict.
+     * This wrapper is for callers that do not already hold dataLock.
      */
     private void assertWorkerCanStart(long generatorId, long workerId) {
-        RuntimeGeneratorEntry entry = findRuntimeEntry(generatorId, workerId);
+        dataReadLock.lock();
+        try {
+            assertWorkerCanStartUnsafe(generatorId, workerId);
+        } finally {
+            dataReadLock.unlock();
+        }
+    }
+
+    private void assertWorkerCanStartUnsafe(long generatorId, long workerId) {
+        RuntimeGeneratorEntry entry = findRuntimeEntryUnsafe(generatorId, workerId);
         if (entry != null) {
             throw IdGenerationException.generatorWorkerAlreadyRunning(generatorId, workerId);
         }
         if (workerIdToGeneratorId.containsKey(workerId)) {
             throw IdGenerationException.workerAlreadyRunning(workerId);
+        }
+    }
+
+    private boolean isWorkerRunning(long workerId) {
+        dataReadLock.lock();
+        try {
+            return workerIdToGeneratorId.containsKey(workerId);
+        } finally {
+            dataReadLock.unlock();
         }
     }
 
