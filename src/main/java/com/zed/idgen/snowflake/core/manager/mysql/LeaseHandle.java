@@ -3,10 +3,8 @@ package com.zed.idgen.snowflake.core.manager.mysql;
 import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
 
 /**
- * Ownership proof returned by a successful lease acquire.
- *
- * Later renew/release operations must use the same owner token and fencing
- * token. affectedRows == 0 then means the handle is stale or the lease is gone.
+ * Ownership handle returned by {@link LeaseManager#tryAcquire(LeaseRequest)}.
+ * See {@link LeaseManager} for the ownership and fencing contract.
  */
 public record LeaseHandle(
         String leaseDomain,
@@ -14,7 +12,8 @@ public record LeaseHandle(
         String ownerId,
         String ownerToken,
         long fencingToken,
-        int leaseTermSeconds) {
+        int leaseTermSeconds,
+        long reuseDelayMillis) {
 
     public LeaseHandle {
         if (leaseDomain == null || leaseDomain.isBlank()) {
@@ -34,6 +33,9 @@ public record LeaseHandle(
         }
         if (leaseTermSeconds <= 0) {
             throw new InvalidConfigException("lease term seconds must be positive");
+        }
+        if (reuseDelayMillis <= 0) {
+            throw new InvalidConfigException("lease reuse delay millis must be positive");
         }
     }
 }

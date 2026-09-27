@@ -44,9 +44,12 @@ CREATE TABLE IF NOT EXISTS leases (
     fencing_token BIGINT NOT NULL,
     renewed_at DATETIME(3) NOT NULL,
     expired_at DATETIME(3) NOT NULL,
+    reusable_at DATETIME(3) NOT NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    CONSTRAINT chk_lease_reusable_after_expiry CHECK (reusable_at > expired_at),
     UNIQUE KEY uk_lease_resource(lease_domain, lease_ref),
     KEY idx_owner(owner_id),
-    KEY idx_expired(expired_at, lease_id)
+    KEY idx_expired(expired_at, lease_id),
+    KEY idx_reusable(reusable_at, lease_id)
 );

@@ -4,6 +4,7 @@ import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
 import com.zed.idgen.snowflake.core.exception.MysqlLeaseException;
 import com.zed.idgen.snowflake.core.exception.MysqlLeaseTimeoutException;
 import com.zed.idgen.snowflake.core.manager.mysql.dao.LeaseDao;
+import com.zed.idgen.snowflake.core.manager.mysql.dao.LeaseDao.LeaseTimeState;
 import com.zed.idgen.snowflake.core.manager.mysql.dao.MysqlDaoFactory;
 import com.zed.idgen.snowflake.core.manager.mysql.dao.MysqlDaoSession;
 import com.zed.idgen.snowflake.core.manager.mysql.entity.LeaseEntity;
@@ -62,7 +63,8 @@ public class MysqlLeaseManager implements LeaseManager {
                         handle.ownerId(),
                         handle.ownerToken(),
                         handle.fencingToken(),
-                        handle.leaseTermSeconds());
+                        handle.leaseTermSeconds(),
+                        handle.reuseDelayMillis());
                 return affected == 1;
             } catch (SQLException | PersistenceException e) {
                 throw convertDbException("renew lease", e);
@@ -79,7 +81,8 @@ public class MysqlLeaseManager implements LeaseManager {
                         handle.leaseRef(),
                         handle.ownerId(),
                         handle.ownerToken(),
-                        handle.fencingToken());
+                        handle.fencingToken(),
+                        handle.reuseDelayMillis());
                 return affected == 1;
             } catch (SQLException | PersistenceException e) {
                 throw convertDbException("release lease", e);
@@ -96,9 +99,12 @@ public class MysqlLeaseManager implements LeaseManager {
          * first-acquire path and the unique key turns concurrent inserts into a
          * clean acquisition miss.
          *
-         * Existing row -> only try takeover when MySQL time says it is expired;
-         * the takeover SQL rechecks the old fencing token and expiration, so a
-         * concurrent owner change cannot be overwritten.
+         * Existing row -> expiration and reusability are deliberately separate.
+         * Expiration stops renewal by the old owner. Reusability comes later,
+         * after one Snowflake time bucket plus the configured clock-skew window
+         * and safety margin. Only then may a fresh provider restart sequence 0.
+         * The takeover SQL rechecks both the old fencing token and reusable_at,
+         * so a concurrent owner change cannot be overwritten.
          *
          * Non-expired row -> return the current handle only when owner id,
          * owner token, and fencing token all match. This gives idempotent retry
@@ -110,12 +116,16 @@ public class MysqlLeaseManager implements LeaseManager {
             return insertNewLease(leaseDao, request);
         }
 
-        boolean expired = leaseDao.isExpired(request.leaseDomain(), request.leaseRef());
-        if (expired) {
-            return takeoverExpiredLease(leaseDao, request, lease);
+        LeaseTimeState timeState = leaseDao.selectLeaseTimeState(
+                request.leaseDomain(), request.leaseRef());
+        if (timeState == null) {
+            return Optional.empty();
         }
-        if (isSameOwner(request, lease)) {
+        if (!timeState.expired() && isSameOwner(request, lease)) {
             return Optional.of(toHandle(request, lease.getFencingToken()));
+        }
+        if (timeState.reusable()) {
+            return takeoverReusableLease(leaseDao, request, lease);
         }
         return Optional.empty();
     }
@@ -130,7 +140,8 @@ public class MysqlLeaseManager implements LeaseManager {
                     request.leaseDescription(),
                     request.ownerId(),
                     request.ownerToken(),
-                    request.leaseTermSeconds());
+                    request.leaseTermSeconds(),
+                    request.reuseDelayMillis());
             return affected == 1 ? Optional.of(toHandle(request, 0L)) : Optional.empty();
         } catch (SQLException e) {
             if (isDuplicateKey(e)) {
@@ -140,18 +151,19 @@ public class MysqlLeaseManager implements LeaseManager {
         }
     }
 
-    private Optional<LeaseHandle> takeoverExpiredLease(
+    private Optional<LeaseHandle> takeoverReusableLease(
             LeaseDao leaseDao,
             LeaseRequest request,
             LeaseEntity lease) throws SQLException {
         long previousFencingToken = lease.getFencingToken();
-        int affected = leaseDao.tryTakeoverExpiredLease(
+        int affected = leaseDao.tryTakeoverReusableLease(
                 request.leaseDomain(),
                 request.leaseRef(),
                 request.ownerId(),
                 request.ownerToken(),
                 previousFencingToken,
-                request.leaseTermSeconds());
+                request.leaseTermSeconds(),
+                request.reuseDelayMillis());
         return affected == 1 ? Optional.of(toHandle(request, previousFencingToken + 1)) : Optional.empty();
     }
 
@@ -162,7 +174,8 @@ public class MysqlLeaseManager implements LeaseManager {
                 request.ownerId(),
                 request.ownerToken(),
                 fencingToken,
-                request.leaseTermSeconds());
+                request.leaseTermSeconds(),
+                request.reuseDelayMillis());
     }
 
     private static boolean isSameOwner(LeaseRequest request, LeaseEntity lease) {

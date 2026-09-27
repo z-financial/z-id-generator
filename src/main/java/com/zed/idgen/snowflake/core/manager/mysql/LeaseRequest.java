@@ -5,8 +5,9 @@ import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
 /**
  * Request to acquire one lease resource.
  *
- * fencingToken is optional and is only used for idempotent acquire checks when
- * the caller already has a known handle. A fresh acquire can pass null.
+ * <p>{@code fencingToken} is null for a fresh acquisition. A caller retrying
+ * with a known handle may supply its generation for an idempotent ownership
+ * check. See {@link LeaseManager} for the complete ownership contract.
  */
 public record LeaseRequest(
         String leaseDomain,
@@ -15,7 +16,8 @@ public record LeaseRequest(
         String ownerId,
         String ownerToken,
         Long fencingToken,
-        int leaseTermSeconds) {
+        int leaseTermSeconds,
+        long reuseDelayMillis) {
 
     public LeaseRequest {
         if (leaseDomain == null || leaseDomain.isBlank()) {
@@ -36,6 +38,9 @@ public record LeaseRequest(
         if (leaseTermSeconds <= 0) {
             throw new InvalidConfigException("lease term seconds must be positive");
         }
+        if (reuseDelayMillis <= 0) {
+            throw new InvalidConfigException("lease reuse delay millis must be positive");
+        }
     }
 
     public LeaseRequest(
@@ -44,7 +49,9 @@ public record LeaseRequest(
             String leaseDescription,
             String ownerId,
             String ownerToken,
-            int leaseTermSeconds) {
-        this(leaseDomain, leaseRef, leaseDescription, ownerId, ownerToken, null, leaseTermSeconds);
+            int leaseTermSeconds,
+            long reuseDelayMillis) {
+        this(leaseDomain, leaseRef, leaseDescription, ownerId, ownerToken, null,
+                leaseTermSeconds, reuseDelayMillis);
     }
 }

@@ -118,15 +118,47 @@ public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManage
         startBackgroundTasks();
     }
 
+    private static IdGeneratorInstance createLeasedGenerator(
+            RuntimeCreateContext context,
+            GeneratorInstanceProperties properties,
+            long instanceId) {
+        MysqlRuntimeAttachment attachment = mysqlAttachment(context.attachment());
+        IdGeneratorInstance delegate = IdGeneratorFactory.create(properties, instanceId);
+        LeaseHandle leaseHandle = attachment.leaseHandle();
+        LeaseInfo leaseInfo = new LeaseInfo(
+                leaseHandle.leaseDomain(),
+                leaseHandle.leaseRef(),
+                leaseHandle.ownerId(),
+                leaseHandle.ownerToken(),
+                leaseHandle.fencingToken());
+        return new LeasedIdGenerator(
+                delegate,
+                attachment.initialLocalExpireAtNanos(),
+                leaseInfo);
+    }
+
+
     @Override
     protected RuntimeCreateContext beforeCreate(GeneratorInstanceProperties properties) {
+        long reuseDelayMillis = runtimeConfig.reuseDelayMillis(properties.idDomainInfo().timeUnit());
         LeaseRequest request = new LeaseRequest(
                 properties.idDomainInfo().domainName(),
                 properties.workerId(),
                 leaseDescription(properties),
                 serverInstanceId,
                 newOwnerToken(),
-                runtimeConfig.leaseTermSeconds());
+                runtimeConfig.leaseTermSeconds(),
+                reuseDelayMillis);
+
+        /*
+         * Anchor the local deadline before entering MySQL. The database starts
+         * its lease during this call, so measuring after the response would add
+         * network/commit latency to the local ownership window and could let the
+         * old node generate after MySQL has made the worker reusable elsewhere.
+         * A slow acquire therefore consumes this safe term instead of extending
+         * it. If the call consumes the whole term, generator.start() fails closed.
+         */
+        long acquireStartedAtNanos = System.nanoTime();
         Optional<LeaseHandle> leaseHandle = leaseManager.tryAcquire(request);
         if (leaseHandle.isEmpty()) {
             throw IdGenerationException.workerCandidateUnavailable(
@@ -135,7 +167,7 @@ public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManage
         return new RuntimeCreateContext(new MysqlRuntimeAttachment(
                 leaseHandle.get(),
                 new AtomicBoolean(false),
-                localSafeTermNanos));
+                acquireStartedAtNanos + localSafeTermNanos));
     }
 
     @Override
@@ -243,6 +275,13 @@ public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManage
             }
 
             boolean renewed;
+            /*
+             * As with initial acquisition, the safe deadline is based on when
+             * renewal began, not when its response arrived. Otherwise a slow DB
+             * response would silently consume the configured DB/local safety
+             * gap and could extend local generation beyond expired_at.
+             */
+            long renewStartedAtNanos = System.nanoTime();
             try {
                 renewed = leaseManager.renew(attachment.leaseHandle());
             } catch (SnowflakeException e) {
@@ -269,7 +308,7 @@ public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManage
             }
 
             try {
-                generator.renewLocalDeadline(System.nanoTime() + attachment.localSafeTermNanos());
+                generator.renewLocalDeadline(renewStartedAtNanos + localSafeTermNanos);
             } catch (SnowflakeException e) {
                 LOGGER.log(Level.WARNING, "mysql lease renewed in DB but local deadline update failed, stopping entry: "
                         + runtimeEntryDescription(entry)
@@ -317,25 +356,6 @@ public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManage
             throw new InvalidConfigException("server instance id is too long for mysql owner token");
         }
         return token;
-    }
-
-    private static IdGeneratorInstance createLeasedGenerator(
-            RuntimeCreateContext context,
-            GeneratorInstanceProperties properties,
-            long instanceId) {
-        MysqlRuntimeAttachment attachment = mysqlAttachment(context.attachment());
-        IdGeneratorInstance delegate = IdGeneratorFactory.create(properties, instanceId);
-        LeaseHandle leaseHandle = attachment.leaseHandle();
-        LeaseInfo leaseInfo = new LeaseInfo(
-                leaseHandle.leaseDomain(),
-                leaseHandle.leaseRef(),
-                leaseHandle.ownerId(),
-                leaseHandle.ownerToken(),
-                leaseHandle.fencingToken());
-        return new LeasedIdGenerator(
-                delegate,
-                System.nanoTime() + attachment.localSafeTermNanos(),
-                leaseInfo);
     }
 
     private ThreadPoolExecutor newRenewWorkerExecutor(MysqlGeneratorRuntimeConfig config) {
@@ -476,6 +496,6 @@ public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManage
     private record MysqlRuntimeAttachment(
             LeaseHandle leaseHandle,
             AtomicBoolean renewInFlight,
-            long localSafeTermNanos) {
+            long initialLocalExpireAtNanos) {
     }
 }
