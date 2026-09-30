@@ -17,8 +17,8 @@ import com.zed.idgen.snowflake.core.model.GeneratorConfig;
 import com.zed.idgen.snowflake.core.model.GeneratorPolicy;
 import com.zed.idgen.snowflake.core.model.GeneratorProperties;
 import com.zed.idgen.snowflake.core.model.IdDomainInfo;
-import tools.jackson.databind.DeserializationFeature;
-import tools.jackson.databind.json.JsonMapper;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.json.JsonMapper;
 
 import java.util.ArrayList;
 import java.util.HashSet;

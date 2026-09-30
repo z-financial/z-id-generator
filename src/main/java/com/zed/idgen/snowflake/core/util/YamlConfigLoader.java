@@ -1,8 +1,8 @@
 package com.zed.idgen.snowflake.core.util;
 
 import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
-import tools.jackson.databind.DeserializationFeature;
-import tools.jackson.dataformat.yaml.YAMLMapper;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.dataformat.yaml.YAMLMapper;
 
 import java.nio.file.Path;
 
