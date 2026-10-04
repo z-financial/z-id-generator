@@ -9,6 +9,7 @@ import com.zed.idgen.snowflake.core.manager.mysql.dao.MysqlDaoFactory;
 import com.zed.idgen.snowflake.core.manager.mysql.dao.MysqlDaoSession;
 import com.zed.idgen.snowflake.core.manager.mysql.entity.CounterEntity;
 import com.zed.idgen.snowflake.core.manager.mysql.entity.DomainEntity;
+import com.zed.idgen.snowflake.core.manager.mysql.entity.GeneratorConfigEntity;
 import com.zed.idgen.snowflake.core.model.GeneratorConfig;
 import com.zed.idgen.snowflake.core.model.IdDomainInfo;
 import com.zed.idgen.snowflake.core.util.MysqlExceptionUtil;
@@ -65,9 +66,115 @@ public final class MysqlRegistrationAdmin implements RegistrationAdmin {
         }
     }
 
+    /**
+     * Returns an equivalent persisted generator or creates it under an existing
+     * domain. Creation commits only the definition; duplicate races are reloaded
+     * and compared after the losing transaction closes.
+     */
     @Override
     public GeneratorConfig ensureGenerator(long domainId, GeneratorRegistrationRequest request) {
-        throw new UnsupportedOperationException("generator registration is implemented by ZIG-4");
+        if (domainId < 0) {
+            throw new InvalidConfigException("domain id must not be negative");
+        }
+        if (request == null) {
+            throw new InvalidConfigException("generator registration request must not be null");
+        }
+
+        try {
+            GeneratorConfig existing = findAndVerifyGenerator(domainId, request);
+            if (existing != null) {
+                return existing;
+            }
+
+            GeneratorConfig created = createGenerator(domainId, request);
+            if (created != null) {
+                return created;
+            }
+
+            // The duplicate-key loser reloads only after its failed transaction has closed.
+            GeneratorConfig winner = findAndVerifyGenerator(domainId, request);
+            if (winner == null) {
+                throw MysqlRegistrationAdminException.operationFailed("reload raced generator");
+            }
+            return winner;
+        } catch (InvalidConfigException | MysqlRegistrationAdminException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            throw translateFailure("ensure generator", e);
+        }
+    }
+
+    private GeneratorConfig findAndVerifyGenerator(
+            long domainId,
+            GeneratorRegistrationRequest request) {
+        try (MysqlDaoSession session = daoFactory.openSession(true)) {
+            GeneratorConfigEntity entity = session.generatorConfigDao()
+                    .findByName(domainId, request.generatorName());
+            if (entity == null) {
+                return null;
+            }
+
+            GeneratorConfig generator = toAuthoritativeGenerator(entity, domainId);
+            // Compare deserialized values so JSON order and formatting cannot affect idempotency.
+            if (!generator.generationPolicy().equals(request.generationPolicy())) {
+                throw MysqlRegistrationAdminException.generatorConflict(
+                        domainId, request.generatorName());
+            }
+            return generator;
+        }
+    }
+
+    /**
+     * Verifies the parent domain and inserts one generator in the same short
+     * transaction. A null result means the natural-key insert lost a race.
+     */
+    private GeneratorConfig createGenerator(
+            long domainId,
+            GeneratorRegistrationRequest request) {
+        try (MysqlDaoSession session = daoFactory.openSession(false)) {
+            try {
+                // The schema has no foreign key, so the transaction must establish parent existence.
+                if (session.domainDao().findById(domainId) == null) {
+                    throw MysqlRegistrationAdminException.domainNotFound(domainId);
+                }
+
+                GeneratorConfigEntity entity = MysqlRegistrationMapper.toGeneratorConfigEntity(
+                        domainId, request);
+                try {
+                    if (session.generatorConfigDao().insert(entity) != 1) {
+                        throw MysqlRegistrationAdminException.operationFailed("insert generator");
+                    }
+                } catch (RuntimeException e) {
+                    if (MysqlExceptionUtil.isDuplicateKey(e)) {
+                        rollbackQuietly(session);
+                        return null;
+                    }
+                    throw translateFailure("insert generator", e);
+                }
+
+                GeneratorConfig generator = toAuthoritativeGenerator(entity, domainId);
+                session.commit();
+                return generator;
+            } catch (RuntimeException e) {
+                rollbackQuietly(session);
+                if (e instanceof InvalidConfigException || e instanceof MysqlRegistrationAdminException) {
+                    throw e;
+                }
+                throw translateFailure("create generator", e);
+            }
+        }
+    }
+
+    private static GeneratorConfig toAuthoritativeGenerator(
+            GeneratorConfigEntity entity,
+            long expectedDomainId) {
+        if (entity.getGeneratorId() == null || entity.getGeneratorId() <= 0) {
+            throw MysqlRegistrationAdminException.operationFailed("read generated generator id");
+        }
+        if (entity.getDomainId() == null || entity.getDomainId() != expectedDomainId) {
+            throw MysqlRegistrationAdminException.operationFailed("verify generator domain");
+        }
+        return MysqlRegistrationMapper.toGeneratorConfig(entity);
     }
 
     private IdDomainInfo findAndVerifyDomain(DomainRegistrationRequest request) {

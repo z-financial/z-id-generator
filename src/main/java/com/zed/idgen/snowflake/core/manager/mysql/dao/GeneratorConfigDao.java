@@ -11,6 +11,16 @@ public interface GeneratorConfigDao extends BaseMapper<GeneratorConfigEntity> {
             SELECT *
             FROM generator_configs
             WHERE domain_id = #{domainId}
+              AND generator_name = #{generatorName}
+            """)
+    GeneratorConfigEntity findByName(
+            @Param("domainId") long domainId,
+            @Param("generatorName") String generatorName);
+
+    @Select("""
+            SELECT *
+            FROM generator_configs
+            WHERE domain_id = #{domainId}
               AND generator_id = #{generatorId}
             """)
     GeneratorConfigEntity findById(

@@ -18,6 +18,21 @@ public final class MysqlRegistrationAdminException extends SnowflakeException {
                 SnowflakeErrorCode.MysqlRegistrationConflict);
     }
 
+    public static MysqlRegistrationAdminException generatorConflict(
+            long domainId,
+            String generatorName) {
+        return new MysqlRegistrationAdminException(
+                "generator registration conflicts with the existing definition: "
+                        + domainId + "/" + generatorName,
+                SnowflakeErrorCode.MysqlRegistrationConflict);
+    }
+
+    public static MysqlRegistrationAdminException domainNotFound(long domainId) {
+        return new MysqlRegistrationAdminException(
+                "generator registration domain not found: " + domainId,
+                SnowflakeErrorCode.MysqlRegistrationDomainNotFound);
+    }
+
     public static MysqlRegistrationAdminException missingDomainCounter(long domainId) {
         return new MysqlRegistrationAdminException(
                 "canonical worker counter is missing for domain: " + domainId,

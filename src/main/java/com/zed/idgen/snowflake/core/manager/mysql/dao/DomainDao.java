@@ -7,6 +7,9 @@ import org.apache.ibatis.annotations.Select;
 
 public interface DomainDao extends BaseMapper<DomainEntity> {
 
+    @Select("SELECT * FROM domains WHERE domain_id = #{domainId}")
+    DomainEntity findById(@Param("domainId") long domainId);
+
     @Select("""
             SELECT *
             FROM domains

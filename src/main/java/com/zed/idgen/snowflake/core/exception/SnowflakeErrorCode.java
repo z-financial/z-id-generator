@@ -24,7 +24,8 @@ public enum SnowflakeErrorCode {
     MysqlRegistrationConflict(19, "mysql registration conflict"),
     MysqlRegistrationIntegrityFailed(20, "mysql registration integrity failed"),
     MysqlRegistrationOperationFailed(21, "mysql registration operation failed"),
-    MysqlRegistrationOperationTimeout(22, "mysql registration operation timeout"),;
+    MysqlRegistrationOperationTimeout(22, "mysql registration operation timeout"),
+    MysqlRegistrationDomainNotFound(23, "mysql registration domain not found"),;
 
     private final int code;
     private final String message;
