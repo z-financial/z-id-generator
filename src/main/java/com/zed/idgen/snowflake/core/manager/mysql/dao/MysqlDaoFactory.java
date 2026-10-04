@@ -105,6 +105,7 @@ public class MysqlDaoFactory implements AutoCloseable {
 
     private static void registerDaos(MybatisConfiguration configuration) {
         configuration.addMapper(DomainDao.class);
+        configuration.addMapper(CounterDao.class);
         configuration.addMapper(GeneratorConfigDao.class);
         configuration.addMapper(WorkerDao.class);
         configuration.addMapper(LeaseSqlMapper.class);

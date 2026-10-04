@@ -21,6 +21,10 @@ public class MysqlDaoSession implements AutoCloseable {
         return sqlSession.getMapper(DomainDao.class);
     }
 
+    public CounterDao counterDao() {
+        return sqlSession.getMapper(CounterDao.class);
+    }
+
     public GeneratorConfigDao generatorConfigDao() {
         return sqlSession.getMapper(GeneratorConfigDao.class);
     }
