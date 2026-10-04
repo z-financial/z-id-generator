@@ -17,7 +17,10 @@ public enum SnowflakeErrorCode {
     LeaseExpired(12, "lease expired"),
     MysqlLeaseOperationFailed(13, "mysql lease operation failed"),
     MysqlLeaseOperationTimeout(14, "mysql lease operation timeout"),
-    WorkerCandidateUnavailable(15, "worker candidate unavailable"),;
+    WorkerCandidateUnavailable(15, "worker candidate unavailable"),
+    MysqlWorkerCounterMissing(16, "mysql worker counter missing"),
+    MysqlWorkerCapacityExhausted(17, "mysql worker capacity exhausted"),
+    MysqlWorkerRegistrationFailed(18, "mysql worker registration failed"),;
 
     private final int code;
     private final String message;
