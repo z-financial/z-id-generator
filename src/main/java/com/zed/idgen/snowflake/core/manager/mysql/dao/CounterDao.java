@@ -12,6 +12,13 @@ public interface CounterDao extends BaseMapper<CounterEntity> {
             SELECT *
             FROM counters
             WHERE counter_ref = #{counterRef}
+            """)
+    CounterEntity findByRef(@Param("counterRef") String counterRef);
+
+    @Select("""
+            SELECT *
+            FROM counters
+            WHERE counter_ref = #{counterRef}
             FOR UPDATE
             """)
     CounterEntity findByRefForUpdate(@Param("counterRef") String counterRef);

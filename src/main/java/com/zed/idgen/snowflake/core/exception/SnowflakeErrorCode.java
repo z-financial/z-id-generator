@@ -20,7 +20,11 @@ public enum SnowflakeErrorCode {
     WorkerCandidateUnavailable(15, "worker candidate unavailable"),
     MysqlWorkerCounterMissing(16, "mysql worker counter missing"),
     MysqlWorkerCapacityExhausted(17, "mysql worker capacity exhausted"),
-    MysqlWorkerRegistrationFailed(18, "mysql worker registration failed"),;
+    MysqlWorkerRegistrationFailed(18, "mysql worker registration failed"),
+    MysqlRegistrationConflict(19, "mysql registration conflict"),
+    MysqlRegistrationIntegrityFailed(20, "mysql registration integrity failed"),
+    MysqlRegistrationOperationFailed(21, "mysql registration operation failed"),
+    MysqlRegistrationOperationTimeout(22, "mysql registration operation timeout"),;
 
     private final int code;
     private final String message;

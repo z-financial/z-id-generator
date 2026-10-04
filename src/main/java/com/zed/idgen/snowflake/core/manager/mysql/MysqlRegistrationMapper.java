@@ -7,6 +7,7 @@ import com.zed.idgen.snowflake.core.constant.IdRunOutPolicy;
 import com.zed.idgen.snowflake.core.constant.PrefixType;
 import com.zed.idgen.snowflake.core.constant.TimeUnit;
 import com.zed.idgen.snowflake.core.exception.InvalidConfigException;
+import com.zed.idgen.snowflake.core.manager.DomainRegistrationRequest;
 import com.zed.idgen.snowflake.core.manager.mysql.entity.DomainEntity;
 import com.zed.idgen.snowflake.core.manager.mysql.entity.GeneratorConfigEntity;
 import com.zed.idgen.snowflake.core.manager.mysql.enums.DomainPrefixType;
@@ -44,6 +45,20 @@ final class MysqlRegistrationMapper {
                 entity.getEpochStartMs(),
                 toTimeUnit(entity.getTimeUnit())
         );
+    }
+
+    static DomainEntity toDomainEntity(DomainRegistrationRequest request) {
+        return new DomainEntity(
+                null,
+                request.domainName(),
+                toDomainPrefixType(request.prefixType()),
+                request.timeBit(),
+                request.workerBit(),
+                request.sequenceBit(),
+                request.epochStartMs(),
+                toDomainTimeUnit(request.timeUnit()),
+                null,
+                null);
     }
 
     static GeneratorConfig toGeneratorConfig(GeneratorConfigEntity entity) {
@@ -123,6 +138,20 @@ final class MysqlRegistrationMapper {
         return switch (timeUnit) {
             case MILLISECOND -> TimeUnit.MILLISECOND;
             case SECOND -> TimeUnit.SECOND;
+        };
+    }
+
+    private static DomainPrefixType toDomainPrefixType(PrefixType prefixType) {
+        return switch (prefixType) {
+            case POSITIVE_SIGNAL -> DomainPrefixType.POSITIVE_SIGNAL;
+            case NONE -> DomainPrefixType.NONE;
+        };
+    }
+
+    private static DomainTimeUnit toDomainTimeUnit(TimeUnit timeUnit) {
+        return switch (timeUnit) {
+            case MILLISECOND -> DomainTimeUnit.MILLISECOND;
+            case SECOND -> DomainTimeUnit.SECOND;
         };
     }
 

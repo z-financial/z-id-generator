@@ -8,10 +8,10 @@ import com.zed.idgen.snowflake.core.manager.mysql.dao.LeaseDao.LeaseTimeState;
 import com.zed.idgen.snowflake.core.manager.mysql.dao.MysqlDaoFactory;
 import com.zed.idgen.snowflake.core.manager.mysql.dao.MysqlDaoSession;
 import com.zed.idgen.snowflake.core.manager.mysql.entity.LeaseEntity;
+import com.zed.idgen.snowflake.core.util.MysqlExceptionUtil;
 import org.apache.ibatis.exceptions.PersistenceException;
 
 import java.sql.SQLException;
-import java.sql.SQLTimeoutException;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -24,9 +24,6 @@ import java.util.Optional;
  * transaction; renew/release are single-statement auto-commit operations.
  */
 public class MysqlLeaseManager implements LeaseManager {
-    private static final int MYSQL_DUPLICATE_KEY_ERROR_CODE = 1062;
-    private static final String MYSQL_QUERY_TIMEOUT_SQL_STATE = "70100";
-
     private final MysqlDaoFactory daoFactory;
 
     public MysqlLeaseManager(MysqlDaoFactory daoFactory) {
@@ -144,7 +141,7 @@ public class MysqlLeaseManager implements LeaseManager {
                     request.reuseDelayMillis());
             return affected == 1 ? Optional.of(toHandle(request, 0L)) : Optional.empty();
         } catch (SQLException e) {
-            if (isDuplicateKey(e)) {
+            if (MysqlExceptionUtil.isDuplicateKey(e)) {
                 return Optional.empty();
             }
             throw e;
@@ -186,41 +183,10 @@ public class MysqlLeaseManager implements LeaseManager {
     }
 
     private static RuntimeException convertDbException(String operation, Throwable cause) {
-        if (isTimeout(cause)) {
+        if (MysqlExceptionUtil.isTimeout(cause)) {
             return MysqlLeaseTimeoutException.operationTimeout(operation, cause);
         }
         return MysqlLeaseException.operationFailed(operation, cause);
-    }
-
-    private static boolean isDuplicateKey(Throwable throwable) {
-        for (Throwable cause = throwable; cause != null; cause = cause.getCause()) {
-            if (cause instanceof SQLException sqlException) {
-                String message = sqlException.getMessage();
-                if (sqlException.getErrorCode() == MYSQL_DUPLICATE_KEY_ERROR_CODE) {
-                    return true;
-                }
-                if (message != null && message.toLowerCase().contains("duplicate")) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
-    private static boolean isTimeout(Throwable throwable) {
-        for (Throwable cause = throwable; cause != null; cause = cause.getCause()) {
-            if (cause instanceof SQLTimeoutException) {
-                return true;
-            }
-            if (cause instanceof SQLException sqlException
-                    && MYSQL_QUERY_TIMEOUT_SQL_STATE.equals(sqlException.getSQLState())) {
-                return true;
-            }
-            if ("MySQLTimeoutException".equals(cause.getClass().getSimpleName())) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static void rollbackQuietly(MysqlDaoSession session) {
