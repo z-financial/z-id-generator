@@ -65,6 +65,15 @@ public final class MysqlRegistrationLoader implements RegistrationLoader {
 
     @Override
     public List<GeneratorProperties> loadGeneratorProperties(long generatorId) {
+        return loadGeneratorProperties(generatorId, false);
+    }
+
+    @Override
+    public List<GeneratorProperties> loadCandidateProperties(long generatorId) {
+        return loadGeneratorProperties(generatorId, true);
+    }
+
+    private List<GeneratorProperties> loadGeneratorProperties(long generatorId, boolean eligibleOnly) {
         validateGeneratorId(generatorId);
         IdDomainInfo domain = getDomainInfo();
         try (MysqlDaoSession session = daoFactory.openSession(true)) {
@@ -75,9 +84,12 @@ public final class MysqlRegistrationLoader implements RegistrationLoader {
             }
             validateGeneratorEntity(domain, generatorId, generatorEntity);
 
-            List<WorkerEntity> workers = session.workerDao().findByGenerator(domain.domainId(), generatorId);
-            if (workers == null || workers.isEmpty()) {
-                throw new InvalidConfigException("worker list must not be empty, generator id: " + generatorId);
+            List<WorkerEntity> workers = eligibleOnly
+                    ? session.workerDao().findEligibleByGenerator(
+                            domain.domainId(), generatorId, domain.domainName())
+                    : session.workerDao().findByGenerator(domain.domainId(), generatorId);
+            if (workers == null) {
+                throw new InvalidConfigException("worker list must not be null, generator id: " + generatorId);
             }
 
             GeneratorConfig generatorConfig = MysqlRegistrationMapper.toGeneratorConfig(generatorEntity);

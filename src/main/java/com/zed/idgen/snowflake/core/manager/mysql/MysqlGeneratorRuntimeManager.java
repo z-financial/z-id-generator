@@ -12,8 +12,9 @@ import com.zed.idgen.snowflake.core.generator.LeasedIdGenerator;
 import com.zed.idgen.snowflake.core.manager.AbstractGeneratorRuntimeManager;
 import com.zed.idgen.snowflake.core.manager.RegistrationLoader;
 import com.zed.idgen.snowflake.core.manager.RuntimeCreateContext;
-import com.zed.idgen.snowflake.core.model.GeneratorInstanceProperties;
 import com.zed.idgen.snowflake.core.manager.mysql.dao.MysqlDaoFactory;
+import com.zed.idgen.snowflake.core.model.GeneratorInstanceProperties;
+import com.zed.idgen.snowflake.core.model.GeneratorProperties;
 
 import java.util.List;
 import java.util.Optional;
@@ -43,8 +44,12 @@ import java.util.logging.Logger;
 public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManager {
     private static final Logger LOGGER = Logger.getLogger(MysqlGeneratorRuntimeManager.class.getName());
     private static final int OWNER_TOKEN_MAX_LENGTH = 64;
+    private static final WorkerRegistrar NO_DYNAMIC_REGISTRATION = generatorId -> {
+        throw new IllegalStateException("dynamic worker registration is not configured");
+    };
 
     private final LeaseManager leaseManager;
+    private final WorkerRegistrar workerRegistrar;
     private final String serverInstanceId;
     private final MysqlGeneratorRuntimeConfig runtimeConfig;
     /*
@@ -94,6 +99,7 @@ public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManage
         this(
                 new MysqlRegistrationLoader(daoFactory, domainName),
                 new MysqlLeaseManager(daoFactory),
+                new MysqlWorkerRegistrar(daoFactory, domainName),
                 serverInstanceId,
                 runtimeConfig);
     }
@@ -103,11 +109,24 @@ public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManage
             LeaseManager leaseManager,
             String serverInstanceId,
             MysqlGeneratorRuntimeConfig runtimeConfig) {
+        this(registrationLoader, leaseManager, NO_DYNAMIC_REGISTRATION, serverInstanceId, runtimeConfig);
+    }
+
+    public MysqlGeneratorRuntimeManager(
+            RegistrationLoader registrationLoader,
+            LeaseManager leaseManager,
+            WorkerRegistrar workerRegistrar,
+            String serverInstanceId,
+            MysqlGeneratorRuntimeConfig runtimeConfig) {
         super(registrationLoader, MysqlGeneratorRuntimeManager::createLeasedGenerator);
         if (leaseManager == null) {
             throw new InvalidConfigException("lease manager must not be null");
         }
+        if (workerRegistrar == null) {
+            throw new InvalidConfigException("worker registrar must not be null");
+        }
         this.leaseManager = leaseManager;
+        this.workerRegistrar = workerRegistrar;
         this.serverInstanceId = requireServerInstanceId(serverInstanceId);
         this.runtimeConfig = runtimeConfig == null ? MysqlGeneratorRuntimeConfig.defaults() : runtimeConfig;
         this.localSafeTermNanos = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
@@ -168,6 +187,20 @@ public class MysqlGeneratorRuntimeManager extends AbstractGeneratorRuntimeManage
                 leaseHandle.get(),
                 new AtomicBoolean(false),
                 acquireStartedAtNanos + localSafeTermNanos));
+    }
+
+    /**
+     * Durably registers one worker after the existing candidate scan is exhausted.
+     * The registrar completes its transaction before the base workflow acquires
+     * the worker lease.
+     */
+    @Override
+    protected Optional<GeneratorProperties> registerGeneratorProperties(long generatorId) {
+        // The compatibility constructor preserves the previous non-registering behavior.
+        if (workerRegistrar == NO_DYNAMIC_REGISTRATION) {
+            return Optional.empty();
+        }
+        return Optional.of(workerRegistrar.registerNext(generatorId));
     }
 
     @Override

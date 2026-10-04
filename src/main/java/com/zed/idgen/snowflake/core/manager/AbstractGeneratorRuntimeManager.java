@@ -14,6 +14,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
@@ -165,7 +166,18 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
         }
     }
 
-    // Start holds stateReadLock across slow work, but locks runtime maps only for short checks/publish.
+    /**
+     * Starts one worker by scanning the source-provided candidates in order. Each
+     * candidate is skipped when it is already running locally or loses a retryable
+     * lease/publication race; other failures stop the workflow. If the scan is
+     * exhausted, the source may durably register one new worker, which then follows
+     * the same acquire, create, start, and publish path. Registration therefore
+     * completes before any lease is acquired, and exhaustion is reported only after
+     * both the existing candidates and the one newly registered candidate fail.
+     *
+     * <p>The state read lock prevents shutdown during the workflow, while runtime-map
+     * locks are held only for short conflict checks and publication.</p>
+     */
     @Override
     public IdGenerator startGeneratorInstance(long generatorId) {
         requireGeneratorId(generatorId);
@@ -188,6 +200,19 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
                     throw e;
                 }
             }
+
+            // Existing candidates are exhausted; give the source one durable registration attempt.
+            Optional<GeneratorProperties> registeredCandidate = registerGeneratorProperties(generatorId);
+            if (registeredCandidate.isEmpty()) {
+                throw new InvalidConfigException("registered generator properties must not be null");
+            }
+            try {
+                return createAndRegister(registeredCandidate.get()).generator();
+            } catch (IdGenerationException e) {
+                if (!isSkippableCandidateFailure(e)) {
+                    throw e;
+                }
+            }
             throw IdGenerationException.noAvailableWorker(generatorId);
         } finally {
             stateReadLock.unlock();
@@ -203,7 +228,7 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
         try {
             ensureOpen();
             assertWorkerCanStart(generatorId, workerId);
-            GeneratorProperties properties = findCandidateByWorkerId(loadCandidateProperties(generatorId), workerId);
+            GeneratorProperties properties = findCandidateByWorkerId(loadRegisteredProperties(generatorId), workerId);
             if (properties == null) {
                 throw new InvalidConfigException("worker id is not registered under generator: " + workerId);
             }
@@ -312,6 +337,14 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
      */
     protected RuntimeCreateContext beforeCreate(GeneratorInstanceProperties properties) {
         return RuntimeCreateContext.empty();
+    }
+
+    /**
+     * Source-specific post-scan registration hook for automatic startup.
+     * The default preserves preconfigured-worker behavior for non-MySQL managers.
+     */
+    protected Optional<GeneratorProperties> registerGeneratorProperties(long generatorId) {
+        return Optional.empty();
     }
 
     /**
@@ -551,9 +584,18 @@ public abstract class AbstractGeneratorRuntimeManager implements GeneratorRuntim
     }
 
     private List<GeneratorProperties> loadCandidateProperties(long generatorId) {
-        List<GeneratorProperties> candidates = registrationLoader.loadGeneratorProperties(generatorId);
-        if (candidates == null || candidates.isEmpty()) {
-            throw new InvalidConfigException("generator properties must not be empty, generator id: " + generatorId);
+        return requireProperties(registrationLoader.loadCandidateProperties(generatorId), generatorId);
+    }
+
+    private List<GeneratorProperties> loadRegisteredProperties(long generatorId) {
+        return requireProperties(registrationLoader.loadGeneratorProperties(generatorId), generatorId);
+    }
+
+    private static List<GeneratorProperties> requireProperties(
+            List<GeneratorProperties> candidates,
+            long generatorId) {
+        if (candidates == null) {
+            throw new InvalidConfigException("generator properties must not be null, generator id: " + generatorId);
         }
         return candidates;
     }

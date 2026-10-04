@@ -46,6 +46,11 @@ public final class MysqlWorkerRegistrar implements WorkerRegistrar {
         }
     }
 
+    /**
+     * Serializes allocation on the domain counter row, then inserts the worker and
+     * advances the counter in one transaction. The session is committed and closed
+     * before the registered properties are returned to the lease/start workflow.
+     */
     private GeneratorProperties registerInTransaction(long generatorId) {
         GeneratorProperties registered;
         try (MysqlDaoSession session = daoFactory.openSession(false)) {

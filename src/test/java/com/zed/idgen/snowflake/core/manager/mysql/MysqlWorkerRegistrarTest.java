@@ -22,6 +22,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -73,6 +74,7 @@ class MysqlWorkerRegistrarTest {
         try (Connection connection = dataSource.getConnection();
              Statement statement = connection.createStatement()) {
             statement.execute("DROP TRIGGER IF EXISTS force_counter_change");
+            statement.executeUpdate("DELETE FROM leases");
             statement.executeUpdate("DELETE FROM workers");
             statement.executeUpdate("DELETE FROM generator_configs");
             statement.executeUpdate("DELETE FROM counters");
@@ -161,6 +163,29 @@ class MysqlWorkerRegistrarTest {
         assertEquals(0L, workerCount());
     }
 
+    @Test
+    void loaderReturnsEmptyOrEligibleWorkersInStableOrder() throws Exception {
+        RegistrationData orders = seedRegistration(ORDERS, 0L);
+        MysqlRegistrationLoader loader = new MysqlRegistrationLoader(daoFactory, ORDERS);
+
+        List<GeneratorProperties> empty = loader.loadCandidateProperties(orders.generatorId());
+        assertEquals(List.of(), empty);
+        assertThrows(UnsupportedOperationException.class, () -> empty.add(null));
+
+        insertWorker(orders, 2L);
+        insertWorker(orders, 0L);
+        insertWorker(orders, 1L);
+        insertLeaseStates();
+
+        List<Long> eligibleWorkerIds = loader.loadCandidateProperties(orders.generatorId()).stream()
+                .map(GeneratorProperties::workerId)
+                .toList();
+        assertEquals(List.of(1L, 2L), eligibleWorkerIds);
+        assertEquals(List.of(0L, 1L, 2L), loader.loadGeneratorProperties(orders.generatorId()).stream()
+                .map(GeneratorProperties::workerId)
+                .toList());
+    }
+
     private static CompletableFuture<GeneratorProperties> registerAsync(
             ExecutorService executor,
             CountDownLatch start,
@@ -236,6 +261,27 @@ class MysqlWorkerRegistrarTest {
             statement.setLong(2, data.generatorId());
             statement.setLong(3, workerId);
             statement.executeUpdate();
+        }
+    }
+
+    private static void insertLeaseStates() throws Exception {
+        try (Connection connection = dataSource.getConnection();
+             Statement statement = connection.createStatement()) {
+            statement.executeUpdate("""
+                    INSERT INTO leases(
+                        lease_domain, lease_ref, lease_description,
+                        owner_id, owner_token, fencing_token,
+                        renewed_at, expired_at, reusable_at)
+                    VALUES
+                        ('orders', 0, 'active', 'node-a', 'active-token', 0,
+                         UTC_TIMESTAMP(3),
+                         TIMESTAMPADD(MINUTE, 1, UTC_TIMESTAMP(3)),
+                         TIMESTAMPADD(MINUTE, 2, UTC_TIMESTAMP(3))),
+                        ('orders', 1, 'reusable', 'node-b', 'reusable-token', 0,
+                         TIMESTAMPADD(SECOND, -3, UTC_TIMESTAMP(3)),
+                         TIMESTAMPADD(SECOND, -2, UTC_TIMESTAMP(3)),
+                         TIMESTAMPADD(SECOND, -1, UTC_TIMESTAMP(3)))
+                    """);
         }
     }
 

@@ -65,10 +65,13 @@ class MysqlGeneratorRuntimeManagerTest {
 
     @Test
     void startSkipsLeaseUnavailableWorkerAndReleasesOnStop() {
+        FakeRegistrationLoader registrationLoader = new FakeRegistrationLoader();
+        FakeWorkerRegistrar workerRegistrar = new FakeWorkerRegistrar(registrationLoader.properties(3L));
         FakeLeaseManager leaseManager = new FakeLeaseManager(Set.of(1L));
         try (MysqlGeneratorRuntimeManager manager = new MysqlGeneratorRuntimeManager(
-                new FakeRegistrationLoader(),
+                registrationLoader,
                 leaseManager,
+                workerRegistrar,
                 "node-a",
                 runtimeConfig())) {
 
@@ -79,9 +82,55 @@ class MysqlGeneratorRuntimeManagerTest {
             assertSame(generator, manager.getGeneratorInstance(11L, 2L));
             assertEquals(List.of(1L, 2L), leaseManager.acquireRefs);
             assertEquals(1_101L, leaseManager.lastRequest.reuseDelayMillis());
+            assertEquals(0, workerRegistrar.registrationCount.get());
 
             assertTrue(manager.stopGeneratorInstance(11L, 2L));
             assertEquals(1, leaseManager.releaseCount.get());
+        }
+    }
+
+    @Test
+    void exhaustedCandidatesRegisterOnceAndStartCommittedWorker() {
+        FakeRegistrationLoader registrationLoader = new FakeRegistrationLoader();
+        FakeLeaseManager leaseManager = new FakeLeaseManager(Set.of(1L, 2L));
+        FakeWorkerRegistrar workerRegistrar = new FakeWorkerRegistrar(registrationLoader.properties(3L));
+        try (MysqlGeneratorRuntimeManager manager = new MysqlGeneratorRuntimeManager(
+                registrationLoader,
+                leaseManager,
+                workerRegistrar,
+                "node-a",
+                runtimeConfig())) {
+
+            assertNotNull(manager.startGeneratorInstance(11L));
+
+            assertSame(manager.getGeneratorInstance(11L, 3L), manager.getGeneratorInstances(11L).get(3L));
+            assertEquals(List.of(1L, 2L, 3L), leaseManager.acquireRefs);
+            assertEquals(1, workerRegistrar.registrationCount.get());
+        }
+    }
+
+    @Test
+    void emptyAutomaticStartRegistersButExactStartDoesNot() {
+        List<String> events = new ArrayList<>();
+        FakeRegistrationLoader registrationLoader = new FakeRegistrationLoader(List.of());
+        FakeLeaseManager leaseManager = new FakeLeaseManager(Set.of(), events);
+        FakeWorkerRegistrar workerRegistrar = new FakeWorkerRegistrar(
+                registrationLoader.properties(0L), events);
+        try (MysqlGeneratorRuntimeManager manager = new MysqlGeneratorRuntimeManager(
+                registrationLoader,
+                leaseManager,
+                workerRegistrar,
+                "node-a",
+                runtimeConfig())) {
+
+            assertThrows(InvalidConfigException.class, () -> manager.startGeneratorInstance(11L, 0L));
+            assertEquals(0, workerRegistrar.registrationCount.get());
+
+            assertNotNull(manager.startGeneratorInstance(11L));
+
+            assertNotNull(manager.getGeneratorInstance(11L, 0L));
+            assertEquals(1, workerRegistrar.registrationCount.get());
+            assertEquals(List.of("register:0", "lease:0"), events);
         }
     }
 
@@ -250,6 +299,15 @@ class MysqlGeneratorRuntimeManagerTest {
                         1,
                         IdRunOutPolicy.NONE,
                         ClockRollbackPolicy.NONE));
+        private final List<Long> workerIds;
+
+        private FakeRegistrationLoader() {
+            this(List.of(1L, 2L));
+        }
+
+        private FakeRegistrationLoader(List<Long> workerIds) {
+            this.workerIds = List.copyOf(workerIds);
+        }
 
         @Override
         public IdDomainInfo getDomainInfo() {
@@ -263,9 +321,35 @@ class MysqlGeneratorRuntimeManagerTest {
 
         @Override
         public List<GeneratorProperties> loadGeneratorProperties(long generatorId) {
-            return List.of(
-                    new GeneratorProperties(domainInfo, generatorConfig, 1L, null),
-                    new GeneratorProperties(domainInfo, generatorConfig, 2L, null));
+            return workerIds.stream().map(this::properties).toList();
+        }
+
+        private GeneratorProperties properties(long workerId) {
+            return new GeneratorProperties(domainInfo, generatorConfig, workerId, null);
+        }
+    }
+
+    private static final class FakeWorkerRegistrar implements WorkerRegistrar {
+        private final GeneratorProperties registered;
+        private final List<String> events;
+        private final AtomicInteger registrationCount = new AtomicInteger();
+
+        private FakeWorkerRegistrar(GeneratorProperties registered) {
+            this(registered, null);
+        }
+
+        private FakeWorkerRegistrar(GeneratorProperties registered, List<String> events) {
+            this.registered = registered;
+            this.events = events;
+        }
+
+        @Override
+        public GeneratorProperties registerNext(long generatorId) {
+            registrationCount.incrementAndGet();
+            if (events != null) {
+                events.add("register:" + registered.workerId());
+            }
+            return registered;
         }
     }
 
@@ -275,6 +359,7 @@ class MysqlGeneratorRuntimeManagerTest {
         private final long acquireDelayMillis;
         private final long renewDelayMillis;
         private final int successfulRenewalsBeforeFailure;
+        private final List<String> events;
         private final List<Long> acquireRefs = new ArrayList<>();
         private final AtomicInteger releaseCount = new AtomicInteger();
         private final AtomicInteger renewCount = new AtomicInteger();
@@ -286,6 +371,10 @@ class MysqlGeneratorRuntimeManagerTest {
 
         private FakeLeaseManager(Set<Long> unavailableRefs, RuntimeException renewFailure) {
             this(unavailableRefs, renewFailure, 0L, 0L, 0);
+        }
+
+        private FakeLeaseManager(Set<Long> unavailableRefs, List<String> events) {
+            this(unavailableRefs, null, 0L, 0L, 0, events);
         }
 
         private FakeLeaseManager(
@@ -301,17 +390,32 @@ class MysqlGeneratorRuntimeManagerTest {
                 long acquireDelayMillis,
                 long renewDelayMillis,
                 int successfulRenewalsBeforeFailure) {
+            this(unavailableRefs, renewFailure, acquireDelayMillis, renewDelayMillis,
+                    successfulRenewalsBeforeFailure, null);
+        }
+
+        private FakeLeaseManager(
+                Set<Long> unavailableRefs,
+                RuntimeException renewFailure,
+                long acquireDelayMillis,
+                long renewDelayMillis,
+                int successfulRenewalsBeforeFailure,
+                List<String> events) {
             this.unavailableRefs = unavailableRefs;
             this.renewFailure = renewFailure;
             this.acquireDelayMillis = acquireDelayMillis;
             this.renewDelayMillis = renewDelayMillis;
             this.successfulRenewalsBeforeFailure = successfulRenewalsBeforeFailure;
+            this.events = events;
         }
 
         @Override
         public Optional<LeaseHandle> tryAcquire(LeaseRequest request) {
             lastRequest = request;
             acquireRefs.add(request.leaseRef());
+            if (events != null) {
+                events.add("lease:" + request.leaseRef());
+            }
             sleep(acquireDelayMillis);
             if (unavailableRefs.contains(request.leaseRef())) {
                 return Optional.empty();

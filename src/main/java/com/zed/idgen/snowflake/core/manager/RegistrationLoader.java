@@ -26,4 +26,12 @@ public interface RegistrationLoader {
      * properties must still use the stable domain snapshot from getDomainInfo().
      */
     List<GeneratorProperties> loadGeneratorProperties(long generatorId);
+
+    /**
+     * Loads candidates suitable for automatic startup. Sources without
+     * external eligibility state use the complete registered worker list.
+     */
+    default List<GeneratorProperties> loadCandidateProperties(long generatorId) {
+        return loadGeneratorProperties(generatorId);
+    }
 }
