@@ -1,7 +1,9 @@
 package com.zed.idgen.snowflake.core.exception;
 
+import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 
+@Getter
 @RequiredArgsConstructor
 public enum SnowflakeErrorCode {
     InvalidConfig(1, "invalid config"),
