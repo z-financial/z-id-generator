@@ -7,6 +7,21 @@ import com.zed.idgen.snowflake.core.component.provider.IdProvider;
 import com.zed.idgen.snowflake.core.component.IdCodec;
 import com.zed.idgen.snowflake.core.strategy.StrategyExecutor;
 
+/**
+ * Stateful Snowflake ID provider.
+ *
+ * <p>The public generation methods synchronize on this provider instance to
+ * protect the current time slice, sequence cursor, and reusable single-ID
+ * buffer as one critical section. Method-level synchronization is intentional:
+ * the protected scope is one complete generation operation, and keeping it
+ * under one monitor makes the state transition easier to audit.</p>
+ *
+ * <p>Batch generation reserves a sequence range with one monitor acquisition
+ * and one set of clock/policy checks per attempt, so its per-ID overhead is
+ * normally lower than calling {@link #nextId()} repeatedly. The provider still
+ * performs one ID encoding per result and holds the monitor while building the
+ * batch, so very large batches can increase latency for competing callers.</p>
+ */
 public class DefaultIdProvider implements IdProvider {
     private final long worker;
     private final IdCodec idCodec;
@@ -14,7 +29,12 @@ public class DefaultIdProvider implements IdProvider {
     private long time;
     private long sequence;
 
-    // reusable array to avoid allocating an array on hot path of single id creation
+    /*
+     * Reused to avoid allocating an array on the single-ID hot path. The value
+     * must be written and read while holding this provider's monitor. Moving the
+     * lock only to doNextIds() would release it before nextId() reads element 0,
+     * allowing another thread to overwrite the shared buffer first.
+     */
     private final long[] singleId = new long[1];
 
     public DefaultIdProvider(long worker, IdCodec idCodec, GeneratorPolicy policy) {
@@ -23,6 +43,16 @@ public class DefaultIdProvider implements IdProvider {
         this.policy = policy;
     }
 
+    /*
+     * Called only while holding this provider's monitor.
+     *
+     * A batch is an all-or-nothing reservation within one time slice. If the
+     * remaining sequence slots cannot contain the complete batch, this method
+     * applies the configured exhaustion strategy instead of splitting the batch
+     * across time slices. Consequently, the unused tail of the current slice may
+     * be left unallocated. This deliberately favors simple batch semantics over
+     * maximum utilization of every sequence slot.
+     */
     private long[] doNextIds(int size, long[] arr) {
         if (size <= 0 || size > idCodec.getMaxSequence() + 1) {
             throw new IllegalArgumentException("id batch size exceeds max sequence: " + size);
@@ -82,6 +112,9 @@ public class DefaultIdProvider implements IdProvider {
         return result[0];
     }
 
+    /**
+     * Reserves and builds the whole batch under one monitor acquisition.
+     */
     @Override
     public synchronized long[] nextIds(int size) {
         return doNextIds(size, null);
